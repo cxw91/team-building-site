@@ -1,0 +1,15 @@
+{
+  "name": "team-building-site",
+  "version": "1.0.0",
+  "private": true,
+  "description": "团建管理小网站 —— Cloudflare Pages + Pages Functions + D1",
+  "scripts": {
+    "dev": "wrangler pages dev public --port 8788",
+    "db:init": "wrangler d1 execute team_building --local --file=./schema.sql",
+    "db:seed": "wrangler d1 execute team_building --local --file=./seed.sql",
+    "deploy": "wrangler pages deploy public"
+  },
+  "devDependencies": {
+    "wrangler": "^4.155.0"
+  }
+}

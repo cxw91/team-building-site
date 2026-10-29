@@ -1,0 +1,9 @@
+name = "team-building-site"
+compatibility_date = "2024-11-01"
+pages_build_output_dir = "./public"
+
+# D1 数据库绑定：本地开发使用模拟数据库，部署时把 database_id 换成真实 ID
+[[d1_databases]]
+binding = "DB"
+database_name = "team_building"
+database_id = "a6260356-8b14-434a-9180-2918eb1afaf7"

@@ -1,0 +1,2 @@
+# 复制为 .dev.vars 后填写本地开发口令（Cloudflare Pages Functions 本地密钥文件）
+PASSCODE = "team2026"

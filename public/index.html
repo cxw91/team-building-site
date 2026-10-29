@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>团建管理</title>
+  <link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <!-- 登录 -->
+  <section id="loginView" class="view">
+    <div class="panel center">
+      <h1 class="logo">团建管理</h1>
+      <p class="sub">请输入团队口令进入</p>
+      <input id="passcode" type="password" placeholder="口令" autocomplete="current-password" />
+      <button id="loginBtn" class="primary block">进入</button>
+      <p id="loginMsg" class="msg"></p>
+    </div>
+  </section>
+
+  <!-- 项目中心：新建 / 历史项目 -->
+  <section id="homeView" class="view hidden">
+    <header class="topbar">
+      <span class="brand">团建管理</span>
+      <span class="whoami">项目中心</span>
+      <span class="spacer"></span>
+      <button id="logoutBtn2" class="link">退出</button>
+    </header>
+    <main class="content">
+      <div class="section">
+        <div class="section-head"><span class="title">新建团建项目</span></div>
+        <div class="form-row">
+          <input id="projName" placeholder="项目名称，例如：2026 秋季团建" />
+          <input id="projNote" placeholder="备注（可选）：日期 / 地点" />
+        </div>
+        <div class="section-head" style="margin:14px 0 6px">
+          <span class="title" style="font-size:14px">家庭与成员（手动添加，也可以先建项目、之后再补）</span>
+          <button id="addFamRowBtn" class="link">+ 添加一行</button>
+        </div>
+        <div id="famRows"></div>
+        <button id="createProjBtn" class="primary block">创建并进入项目</button>
+        <p id="homeMsg" class="msg"></p>
+      </div>
+
+      <div class="section">
+        <div class="section-head"><span class="title">历史项目</span><span class="hint" id="projCount"></span></div>
+        <div id="projList"></div>
+      </div>
+    </main>
+  </section>
+
+  <!-- 选择家庭（项目内） -->
+  <section id="pickView" class="view hidden">
+    <div class="panel">
+      <h1 class="logo">你是本项目哪个家庭？</h1>
+      <p class="sub" id="pickSub">用于记录操作日志，可随时切换</p>
+      <div id="pickList" class="pick-list"></div>
+      <div class="add-row">
+        <input id="newFamilyName" placeholder="新增家庭名称" />
+        <button id="addFamilyBtn" class="ghost">新增</button>
+      </div>
+      <p id="pickMsg" class="msg"></p>
+      <button id="backHomeBtn" class="link">← 返回项目中心</button>
+    </div>
+  </section>
+
+  <!-- 主界面（项目内） -->
+  <section id="appView" class="view hidden">
+    <header class="topbar">
+      <span class="brand" id="projTitle">团建管理</span>
+      <span id="whoami" class="whoami"></span>
+      <span class="spacer"></span>
+      <button id="switchFamilyBtn" class="link">切换家庭</button>
+      <button id="homeBtn" class="link">项目中心</button>
+      <button id="logoutBtn" class="link">退出</button>
+    </header>
+    <nav id="tabs" class="tabs"></nav>
+    <main id="content" class="content"></main>
+  </section>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
