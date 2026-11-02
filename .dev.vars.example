@@ -1,2 +1,5 @@
 # 复制为 .dev.vars 后填写本地开发口令（Cloudflare Pages Functions 本地密钥文件）
+# PASSCODE：全队共用口令，用于登录
 PASSCODE = "team2026"
+# ADMIN_PASSCODE：管理权限密码，仅用于删除日志 / 删除项目 / 重启已结束的项目（部署到线上时务必换掉）
+ADMIN_PASSCODE = "admin2026"

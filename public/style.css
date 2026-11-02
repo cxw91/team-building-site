@@ -1,15 +1,121 @@
+/* ============ 主题令牌 ============
+   两套配色分别取自「浅色主题.html」与「深色主题.html」，每个令牌右侧注释就是参考文件里
+   的名称，便于逐项核对。切换方式：<html data-theme="light|dark">，由 index.html 头部的
+   引导脚本（避免首屏闪色）与 app.js 的主题模块共同维护。 */
 :root {
-  --bg: #f5f6f8;
+  color-scheme: light;
+
+  /* 背景 / 区域：Background、Region、SecondaryRegion */
+  --bg: #eeeeee;
   --card: #ffffff;
-  --line: #e6e8ec;
-  --text: #1f2329;
-  --muted: #8a9099;
-  --primary: #2f6fed;
-  --primary-dark: #1f56c9;
-  --green: #17a673;
-  --red: #e5484d;
-  --amber: #b7791f;
+  --card-2: #eeeeee;
+  --field: #ffffff;
+
+  /* 文字：PrimaryText、SecondaryText、TextIcon */
+  --text: #212121;
+  --muted: #757575;
+  --on-primary: #ffffff;
+
+  /* 边框：Border */
+  --line: #e0e0e0;
+
+  /* 主色：Primary、DarkPrimary、LightPrimary（含描边与前景色） */
+  --primary: #326cf3;
+  --primary-dark: #326cf3;
+  --primary-rgb: 50, 108, 243;
+  --primary-soft: #f3fbff;
+  --primary-soft-border: #cfe2fb;
+  --primary-soft-text: #326cf3;
+
+  /* 成功 / 绿：Success、LightSuccess */
+  --green-soft: #f3fff6;
+  --green-soft-border: #c4ecca;
+  --green-soft-text: #1e9e3b;
+
+  /* 危险 / 红：Danger、LightDanger */
+  --danger-fill: #db3340;
+  --danger-soft: #fff6f7;
+  --danger-soft-border: #f6cdd0;
+  --danger-text: #db3340;
+
+  /* 警告 / 琥珀：Warning、LightWarning */
+  --warning-soft: #fffcf5;
+  --warning-soft-border: #f2e2b8;
+  --warning-text: #b8860b;
+
+  /* 中性按钮：Default、DarkDefault */
+  --btn-bg: #ffffff;
+  --btn-bg-2: #f5f5f5;
+
+  /* 轻提示条：反色组合（PrimaryText 做底 + ReverseText 文字） */
+  --toast-bg: #212121;
+  --toast-text: #ffffff;
+
+  /* 遮罩（DarkMask）与阴影底色 */
+  --mask: rgba(0, 0, 0, 0.125);
+  --shadow-rgb: 23, 32, 58;
+
   --radius: 12px;
+}
+
+/* 深色主题：取值全部来自「深色主题.html」 */
+html[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #1c1c1c;            /* Region */
+  --card: #2d2d30;          /* SecondaryRegion */
+  --card-2: #424242;        /* ThirdlyRegion */
+  --field: #1c1c1c;         /* Region */
+
+  --text: #ffffff;          /* PrimaryText */
+  /* 参考文件把 SecondaryText 定为 #757575，但它在 #2d2d30 卡片底上只有 2.98:1，
+     对 12–13px 的次要文字偏暗；深色主题改用同一份文件里给说明文字用的可读灰
+     #bdbdbd（卡片上 7.3:1、页面底上 11.8:1），层级仍明显低于 PrimaryText 的纯白。 */
+  --muted: #bdbdbd;
+  --on-primary: #ffffff;
+
+  --line: #3f3f46;          /* Border */
+
+  --primary: #326cf3;
+  --primary-dark: #326cf3;
+  --primary-rgb: 50, 108, 243;
+  --primary-soft: #044289;        /* LightPrimary */
+  --primary-soft-border: #0b5bb5;
+  --primary-soft-text: #8ab4f8;
+
+  --green-soft: #113a1b;          /* LightSuccess */
+  --green-soft-border: #1a5729;
+  --green-soft-text: #6ed98a;
+
+  --danger-fill: #db3340;
+  --danger-soft: #450c0f;         /* LightDanger */
+  --danger-soft-border: #6b1a1f;
+  --danger-text: #f28b92;
+
+  --warning-soft: #4c3a0f;        /* LightWarning */
+  --warning-soft-border: #6b521a;
+  --warning-text: #f5d06a;
+
+  --btn-bg: #686868;              /* Default */
+  --btn-bg-2: #424242;            /* ThirdlyRegion */
+
+  --toast-bg: #424242;            /* ThirdlyRegion：深色下的提示条用亮一级的深色面 */
+  --toast-text: #ffffff;          /* PrimaryText */
+
+  --mask: rgba(0, 0, 0, 0.6);     /* BlurGradientValue 0x99000000：60% 半透明黑，压暗背景 */
+  --shadow-rgb: 0, 0, 0;
+}
+
+/* 深色主题下的弹窗：整块跟随深色主题自己的令牌（#2d2d30 底 + 白色 PrimaryText），
+   不再做成浅色浮层。参考文件《深色主题.html》第 6 节确实建议过深色主题用
+   Background #eeeeee 做对话框，但实际使用中反馈「创建项目弹窗的主题颜色不对」——
+   深色界面里突然弹出一整块亮面过于跳脱。要回到稿件的浅色浮层，把下面这条规则换回
+   `--card: #eeeeee; --card-2: #eeeeee; --field: #ffffff; --line: #e0e0e0;
+    --text: #212121; --muted: #757575; --btn-bg: #ffffff; --btn-bg-2: #f5f5f5;
+    --danger-text: #db3340; color: var(--text);` 即可。 */
+html[data-theme="dark"] .modal-card {
+  /* 页面被压暗后与卡片亮度接近，用一道细边把浮层边界划出来 */
+  border: 1px solid var(--line);
 }
 
 * { box-sizing: border-box; }
@@ -28,20 +134,54 @@ body {
 
 .view { min-height: 100vh; }
 
-/* 登录 / 选择家庭 */
-.center { display: flex; min-height: 100vh; align-items: center; justify-content: center; }
+/* 登录 / 选择家庭：整屏居中。
+   注意：flex 必须放在外层的 .view 上，不能放在 .panel 上——
+   否则 .panel 自身变成横向 flex，容器里的标题会被挤成一列竖排。 */
+.view.center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 28px 16px;
+  padding: calc(28px + env(safe-area-inset-top, 0px)) 16px calc(28px + env(safe-area-inset-bottom, 0px));
+  background:
+    radial-gradient(900px 420px at 50% -12%, var(--primary-soft) 0%, transparent 62%),
+    var(--bg);
+}
+/* 用 margin:auto 居中：内容比屏幕高时顶部不会被裁掉 */
+.view.center > .panel { margin: auto; width: 100%; max-width: 420px; }
+
 .panel {
   background: var(--card);
-  border-radius: var(--radius);
-  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 26px 22px;
   margin: 16px auto;
   max-width: 460px;
   width: calc(100% - 32px);
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 12px 32px rgba(var(--shadow-rgb), 0.08), 0 1px 2px rgba(var(--shadow-rgb), 0.05);
 }
-.panel.center { margin: 0 16px; }
-.logo { font-size: 22px; margin: 0 0 6px; }
+.logo { font-size: 22px; margin: 0 0 6px; white-space: nowrap; }
 .sub { color: var(--muted); margin: 0 0 18px; font-size: 13px; }
+
+/* 口令登录页：单列居中排版 + 视觉美化 */
+#loginView .panel { padding: 30px 24px 24px; text-align: center; }
+#loginView .brand-mark {
+  width: 48px;
+  height: 48px;
+  margin: 0 auto 12px;
+  border-radius: 14px;
+  background: linear-gradient(160deg, var(--primary), var(--primary-dark));
+  color: var(--on-primary);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 48px;
+  box-shadow: 0 8px 18px rgba(var(--primary-rgb), 0.28);
+}
+#loginView .logo { font-size: 24px; letter-spacing: 4px; text-indent: 4px; margin-bottom: 8px; }
+#loginView .sub { margin-bottom: 20px; }
+#loginView #passcode { text-align: center; letter-spacing: 2px; padding: 12px 14px; font-size: 16px; }
+#loginView #loginMsg { text-align: center; }
 
 input, select {
   width: 100%;
@@ -49,7 +189,7 @@ input, select {
   border: 1px solid var(--line);
   border-radius: 10px;
   font-size: 15px;
-  background: #fff;
+  background: var(--field);
   color: var(--text);
   outline: none;
 }
@@ -59,27 +199,36 @@ button {
   padding: 10px 14px;
   border-radius: 10px;
   border: 1px solid var(--line);
-  background: #fff;
+  background: var(--btn-bg);
   color: var(--text);
   font-size: 15px;
   cursor: pointer;
 }
 button:active { transform: translateY(1px); }
-.primary { background: var(--primary); border-color: var(--primary); color: #fff; }
-.primary:hover { background: var(--primary-dark); }
-.ghost { background: #f0f2f5; }
+.primary {
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
+  box-shadow: 0 6px 16px rgba(var(--primary-rgb), 0.22);
+}
+/* 参考文件里 Primary 与 DarkPrimary 是同一个值，没有更深的按压色，
+   所以悬停反馈改用轻微提亮，不再引入调色板以外的颜色 */
+.primary:hover { filter: brightness(1.08); }
+.primary:disabled { box-shadow: none; }
+.ghost { background: var(--btn-bg-2); }
 .block { width: 100%; margin-top: 12px; }
+#loginView .primary.block { margin-top: 14px; padding: 12px 14px; font-weight: 600; letter-spacing: 3px; }
 .link { background: none; border: none; color: var(--primary); padding: 6px 8px; }
-.msg { color: var(--red); min-height: 20px; font-size: 13px; margin: 10px 0 0; }
+.msg { color: var(--danger-text); min-height: 20px; font-size: 13px; margin: 10px 0 0; }
 
 .pick-list { display: flex; flex-wrap: wrap; gap: 10px; }
 .pick {
   flex: 1 1 45%;
   padding: 14px;
   border-radius: 10px;
-  background: #f0f4ff;
-  border: 1px solid #dbe4ff;
-  color: var(--primary-dark);
+  background: var(--primary-soft);
+  border: 1px solid var(--primary-soft-border);
+  color: var(--primary-soft-text);
   font-weight: 600;
 }
 .add-row { display: flex; gap: 8px; margin-top: 16px; }
@@ -122,7 +271,7 @@ button:active { transform: translateY(1px); }
   color: var(--muted);
   white-space: nowrap;
 }
-.tab.active { background: #eef3ff; color: var(--primary); font-weight: 600; }
+.tab.active { background: var(--primary-soft); color: var(--primary-soft-text); font-weight: 600; }
 .badge {
   display: inline-block;
   min-width: 16px;
@@ -131,8 +280,8 @@ button:active { transform: translateY(1px); }
   padding: 0 4px;
   margin-left: 4px;
   border-radius: 999px;
-  background: var(--red);
-  color: #fff;
+  background: var(--danger-fill);
+  color: var(--on-primary);
   font-size: 10px;
   text-align: center;
 }
@@ -167,6 +316,8 @@ h3 { font-size: 15px; margin: 18px 0 10px; }
 }
 .section-head .title { font-weight: 600; }
 .mine { color: var(--primary); font-size: 12px; }
+/* 成员页：其他家庭只读区（浅底与其他家庭区分） */
+.section.readonly { background: var(--card-2); }
 
 .row {
   display: flex;
@@ -180,16 +331,32 @@ h3 { font-size: 15px; margin: 18px 0 10px; }
 .row .name { font-weight: 500; }
 .row .meta { color: var(--muted); font-size: 12px; }
 .row .amt { font-weight: 700; }
+/* 采购清单里的行内小标记：接任务按钮与待购/已购状态共用同一套尺寸，
+   保证同一行里两者高、字号、内边距完全一致（高度固定 26px，便于触控） */
 .pill {
-  font-size: 12px;
-  padding: 2px 9px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12.5px;
+  line-height: 1;
   border-radius: 999px;
   border: 1px solid var(--line);
-  background: #fff;
+  background: var(--btn-bg);
+  color: var(--text);
   cursor: pointer;
+  white-space: nowrap;
 }
-.pill.done { background: #e7f7ef; border-color: #b8e6d0; color: var(--green); }
-.tag { font-size: 12px; padding: 1px 8px; border-radius: 6px; background: #f0f2f5; color: var(--muted); }
+.pill.done { background: var(--green-soft); border-color: var(--green-soft-border); color: var(--green-soft-text); }
+/* 未接任务「接任务」：橙色＝待认领，与「已接单」蓝色、状态标记的白/绿形成颜色区分，
+   尺寸与状态标记完全一致 */
+.pill.claim { background: var(--warning-soft); border-color: var(--warning-soft-border); color: var(--warning-text); }
+/* 只读状态标记（不是接单家庭 / 无人接单时）：外观不变，去掉可点击感 */
+.pill.static { cursor: default; }
+.pill:disabled { cursor: default; opacity: 0.85; }
+.tag { font-size: 12px; padding: 1px 8px; border-radius: 6px; background: var(--card-2); color: var(--muted); }
 
 .form-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .form-row > input, .form-row > select { flex: 1 1 130px; width: auto; }
@@ -199,8 +366,8 @@ table { width: 100%; border-collapse: collapse; }
 th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); font-size: 14px; }
 th { color: var(--muted); font-weight: 500; font-size: 12px; }
 td.r, th.r { text-align: right; }
-.pos { color: var(--green); font-weight: 600; }
-.neg { color: var(--red); font-weight: 600; }
+.pos { color: var(--green-soft-text); font-weight: 600; }
+.neg { color: var(--danger-text); font-weight: 600; }
 
 .logs { display: flex; flex-direction: column; gap: 2px; }
 .log-item { display: flex; gap: 8px; padding: 7px 0; border-bottom: 1px dashed var(--line); font-size: 14px; }
@@ -208,17 +375,72 @@ td.r, th.r { text-align: right; }
 .log-body { flex: 1; }
 .log-who { font-weight: 600; }
 
+/* 管理权限密码弹窗 */
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px 16px;
+  background: var(--mask);
+}
+.modal-card {
+  width: 100%;
+  max-width: 380px;
+  background: var(--card);
+  border-radius: var(--radius);
+  padding: 20px;
+  box-shadow: 0 18px 40px rgba(var(--shadow-rgb), 0.24);
+}
+.modal-title { font-size: 16px; margin: 0 0 6px; }
+.modal-desc { color: var(--muted); font-size: 13px; margin: 0 0 14px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 6px; }
+.modal-actions button { min-width: 84px; }
+
+/* 口令 / 管理密码输入框：手机系统（如华为密码保险箱）会无视 autocomplete="off"，
+   只要字段是 type=password 就在键盘上方弹出「无用户名 / 管理密码」凭据面板。
+   支持文本遮蔽的浏览器里改用 type="text" + 本类（见 app.js 的 hardenSecretInputs），
+   既不触发系统的密码填充，又保留圆点遮罩。 */
+input.secret-masked { -webkit-text-security: disc; }
+
+/* 软键盘弹出、可视区变矮时：弹窗改为贴顶对齐 + 内部可滚动，
+   保证输入框和按钮都留在键盘上方（top/height 由 app.js 跟随 visualViewport 设置）。 */
+.modal.modal-tight {
+  align-items: flex-start;
+  padding-top: 10px;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.modal.modal-tight .modal-card { margin-bottom: 10px; }
+
+/* 已结束项目的只读提示条 */
+.banner {
+  background: var(--warning-soft);
+  border: 1px solid var(--warning-soft-border);
+  color: var(--warning-text);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13px;
+  margin-bottom: 12px;
+}
+
+/* 日志删除入口 */
+.log-del { flex: 0 0 auto; font-size: 13px; padding: 2px 6px; }
+
 .toast {
   position: fixed;
   left: 50%;
   bottom: 24px;
   transform: translateX(-50%);
-  background: #1f2329;
-  color: #fff;
+  background: var(--toast-bg);
+  color: var(--toast-text);
   padding: 10px 16px;
   border-radius: 10px;
   font-size: 14px;
   z-index: 99;
+  pointer-events: none; /* 不遮挡底部按钮 */
 }
 .empty { color: var(--muted); text-align: center; padding: 18px; font-size: 14px; }
 
@@ -227,26 +449,295 @@ td.r, th.r { text-align: right; }
 .meta { color: var(--muted); font-size: 12px; }
 .amt { font-weight: 700; }
 .shrink { flex: 0 0 auto; }
-.danger { color: var(--red); }
-.link.danger { color: var(--red); }
-.tag.off { background: #eef0f3; color: var(--muted); }
+.danger { color: var(--danger-text); }
+.link.danger { color: var(--danger-text); }
+.tag.off { background: var(--card-2); color: var(--muted); }
+/* 采购清单：已被某家庭接单的标记（蓝色＝已接单，与未接单的橙色「接任务」区分；
+   与 pill 同尺寸，避免接单前后行高跳动） */
+.tag.claim {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  height: 20px;
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 1;
+  border-radius: 999px;
+  background: var(--primary-soft);
+  color: var(--primary-soft-text);
+  border: 1px solid var(--primary-soft-border);
+  white-space: nowrap;
+}
+/* 采购清单控件统一成同一种「胶囊」外形：接任务（橙）／取消接任务（中性白）／
+   待购（中性白）／已购（绿）尺寸完全一致（高 26px、圆角 999px、内边距 10px），
+   不再出现「描边胶囊 + 纯文字链接」混排。整组控件一律靠右排布（见 .shop-actions），
+   「删除」作为最后一个控件紧跟在状态按钮右侧，只靠红色描边区分「危险操作」，
+   不再用 auto 外边距把它单独推到最右。 */
+.shop-row .link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12.5px;
+  line-height: 1;
+  white-space: nowrap;
+  color: var(--text);
+  background: var(--btn-bg);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+.shop-row .link[data-action="del-shop"],
+.shop-row .link[data-action="confirm-del"] {
+  color: var(--danger-text);
+  border-color: var(--danger-soft-border);
+  background: var(--danger-soft);
+}
+/* 已登记采购记录的项不可删除：删除控件保留在同一位置，但降级为「不可用」外观（灰字、普通边线、不可点）。
+   必须放在上面的 del-shop 红色规则之后，同优先级时后写的生效。 */
+.shop-row .link[disabled] {
+  color: var(--muted);
+  border-color: var(--line);
+  background: var(--card-2);
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+.shop-row .link[disabled]:active { transform: none; }
+
+/* 采购清单：整行拆成「左侧信息块 + 控件块」。
+   左侧信息块＝名称独占一行 + 下方浅色副信息行（数量/单位/备注、接单家庭、接单时间），
+   与「采购记录」页的两行式排版一致；控件块里的按钮/标记都是行内元素，
+   不再把左侧信息挤成窄窄的竖排。宽度不足时控件整体换到下一行。 */
+.shop-row { flex-wrap: wrap; padding: 13px 0; }
+.shop-row .main { flex: 1 1 auto; min-width: 220px; }
+/* 名称＝主信息（加大字号与字重，和副信息拉开层级） */
+.shop-row .name { font-size: 15px; font-weight: 600; line-height: 1.35; }
+/* 副信息行：数量/单位、接单家庭标记、接单时间排成一条行内流，
+   统一 12.5px 字号与固定间距；普通文字走 .m，避免覆盖接单标记的语义色 */
+.shop-row .shop-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 4px;
+  min-height: 20px;
+  margin-top: 4px;
+  font-size: 12.5px;
+}
+.shop-row .shop-meta > .m { color: var(--muted); font-size: 12.5px; }
+.shop-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end; /* 整组控件靠右，「删除」紧贴在最后一个状态按钮右侧 */
+  flex-wrap: wrap;
+  column-gap: 8px;
+  row-gap: 8px;
+  flex: 0 0 auto;
+}
+/* 手机窄屏：信息块独占整行、控件另起一行并整组靠右对齐（取消接任务／待购／删除
+   或 接任务／待购／删除 依次排在行尾）；控件行与副信息行之间留出 10px，
+   让「信息」和「操作」两组分开。宽屏下控件块是内容宽度、右侧本就贴边，排版不变。 */
+@media (max-width: 560px) {
+  .shop-row { align-items: flex-start; row-gap: 10px; }
+  .shop-row .main { flex: 1 1 100%; }
+  .shop-actions { flex: 1 1 100%; }
+}
 
 /* 项目中心：新建项目表单的家庭行 */
 .fam-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
 .fam-row .fam-name { flex: 0 0 32%; }
 .fam-row .fam-members { flex: 1; }
 
-/* 项目中心：历史 / 进行中的项目卡片 */
+/* 项目中心：历史项目以卡片网格展示 */
+.proj-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 12px;
+}
 .proj-card {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 12px 0;
-  border-top: 1px solid var(--line);
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--card);
 }
-.proj-card:first-of-type { border-top: none; }
-.proj-card .main { flex: 1 1 200px; min-width: 0; }
+.proj-card .main { flex: 1 1 auto; min-width: 0; }
 .proj-card .name { font-weight: 600; }
-.proj-card .meta { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.proj-card .meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.proj-card .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .proj-card.done { opacity: 0.68; }
+
+/* 末尾的「+」卡片：没有项目时即那张中间带加号的空卡片 */
+.proj-add {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 138px;
+  padding: 18px;
+  border: 1.5px dashed var(--primary-soft-border);
+  border-radius: var(--radius);
+  background: var(--primary-soft);
+  color: var(--primary-soft-text);
+  font-size: 14px;
+  cursor: pointer;
+}
+.proj-add:hover { border-color: var(--primary); }
+.proj-add .plus { font-size: 34px; line-height: 1; font-weight: 300; }
+.proj-add .hint2 { color: var(--muted); font-size: 12px; }
+
+/* 新建项目弹窗比管理密码弹窗宽一些，内容高时可滚动 */
+.modal-wide { max-width: 540px; max-height: 86vh; overflow: auto; }
+
+/* 按钮加载态（Loading Button）：点击发起数据库请求后按钮禁用 + 转圈 + 「xx中…」，
+   请求结束恢复原样；禁用本身也挡住了重复点击，避免重复提交 */
+button.is-loading,
+.pill.is-loading,
+.link.is-loading {
+  pointer-events: none;
+  opacity: 0.72;
+  cursor: progress;
+}
+.btn-spin {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 6px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  vertical-align: -2px;
+  animation: btn-spin 0.7s linear infinite;
+}
+@keyframes btn-spin {
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .btn-spin { animation-duration: 2s; }
+}
+
+/* 主题切换按钮：只出现在项目中心顶栏与项目内顶栏（登录页、选择家庭页不显示主题入口）。
+   按钮里同时放着太阳与月亮两个线条图标（定义见 index.html 的 <defs>），由 data-theme
+   决定露哪一个：浅色主题显示月亮（点下去切到深色），深色主题显示太阳（点下去切回浅色）。
+   图标只是装饰（aria-hidden），语义由按钮的 title / aria-label 承担；描边取 currentColor
+   并落在 --muted 上，两套主题下与背景的对比度都超过非文字控件要求的 3:1。 */
+.theme-btn {
+  color: var(--muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 6px;
+}
+.theme-btn:hover { color: var(--text); }
+.theme-icon { display: block; width: 18px; height: 18px; }
+html:not([data-theme="dark"]) .theme-icon--sun,
+html[data-theme="dark"] .theme-icon--moon { display: none; }
+.topbar .theme-btn { padding: 6px 5px; }
+/* 顶栏按钮一律不换行、不压缩：空间不够时让项目名与「当前：某家」用省略号收尾，
+   而不是把「切换家庭」「项目中心」这类按钮挤成两行 */
+.topbar button { flex: 0 0 auto; white-space: nowrap; }
+.topbar .brand,
+.topbar .whoami {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 窄屏上顶栏再紧凑一点，把省下的宽度留给项目名与当前家庭 */
+@media (max-width: 560px) {
+  .topbar { gap: 4px; padding-left: 10px; padding-right: 10px; }
+  .topbar .link { padding: 6px 4px; }
+}
+
+/* ============ 物品名称候选框（自绘下拉） ============
+   原来「登记一笔采购」的名称用的是原生 <datalist>：弹层由浏览器绘制，颜色完全不受
+   CSS 控制，深色主题下无法保证配色，也不能主动收起。改成自绘候选框后颜色全部走主题
+   令牌，可随时收起，输入框本身仍可自由手动输入任意名称。 */
+.form-row > .combo { flex: 1 1 130px; }
+.combo {
+  position: relative;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  background: var(--field);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.combo:focus-within { border-color: var(--primary); }
+.combo > input {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  padding: 10px 4px 10px 12px;
+  color: var(--text);
+  font-size: 15px;
+}
+.combo-toggle {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  /* 全局 button 规则给了 padding: 10px 14px；不重置的话 30px 宽的按钮内容区只剩 2px，
+     箭头图标会被压成一条竖线（这就是「图标显示异常」的根因）。 */
+  padding: 0;
+  margin-right: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.combo-toggle:hover { color: var(--text); background: var(--card-2); }
+/* 图标本身尺寸固定、不参与 flex 收缩，避免被容器挤压变形 */
+.combo-caret {
+  display: block;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  transition: transform 0.15s ease;
+}
+.combo-toggle[aria-expanded="true"] .combo-caret { transform: rotate(180deg); }
+.combo-list {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 6px);
+  z-index: 60;
+  margin: 0;
+  padding: 4px;
+  max-height: 240px;
+  overflow: auto;
+  list-style: none;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 12px 28px rgba(var(--shadow-rgb), 0.22);
+}
+.combo-list li[role="option"] {
+  padding: 9px 10px;
+  border-radius: 8px;
+  font-size: 14px;
+  color: var(--text);
+  cursor: pointer;
+}
+.combo-list li[role="option"]:hover,
+.combo-list li[role="option"][aria-selected="true"] {
+  background: var(--primary-soft);
+  color: var(--primary-soft-text);
+}
+.combo-list li[aria-selected="true"] .combo-sub { color: var(--primary-soft-text); }
+.combo-list .combo-sub { margin-left: 6px; color: var(--muted); font-size: 12px; }
+.combo-list .combo-empty { padding: 9px 10px; color: var(--muted); font-size: 13px; }
+@media (prefers-reduced-motion: reduce) {
+  .combo-caret { transition: none; }
+}

@@ -4,6 +4,9 @@
 -- 说明：使用 CREATE TABLE IF NOT EXISTS，重复执行不会破坏已有数据。
 -- 从上一版（单项目、内置 6 个家庭）升级：表结构有变化，请先重建数据库（本地删除 .wrangler/state，
 -- 线上先 DROP 旧表）再执行本文件。
+-- 从「多项目版」升级到本版（新增采购清单「接任务」认领字段）：不必重建，执行以下两行即可：
+--   ALTER TABLE shopping_items ADD COLUMN claimed_family_id INTEGER;
+--   ALTER TABLE shopping_items ADD COLUMN claimed_at TEXT NOT NULL DEFAULT '';
 
 -- 团建项目（顶层容器）
 CREATE TABLE IF NOT EXISTS projects (
@@ -48,14 +51,16 @@ CREATE TABLE IF NOT EXISTS carry_items (
 
 -- 采购清单（要买什么；不含预估价与实际价对比）
 CREATE TABLE IF NOT EXISTS shopping_items (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  project_id INTEGER NOT NULL,
-  name       TEXT NOT NULL,
-  quantity   TEXT NOT NULL DEFAULT '',
-  unit       TEXT NOT NULL DEFAULT '',
-  status     TEXT NOT NULL DEFAULT '待购',          -- 待购 / 已购
-  note       TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id        INTEGER NOT NULL,
+  name              TEXT NOT NULL,
+  quantity          TEXT NOT NULL DEFAULT '',
+  unit              TEXT NOT NULL DEFAULT '',
+  status            TEXT NOT NULL DEFAULT '待购',     -- 待购 / 已购
+  claimed_family_id INTEGER,                        -- 接任务：认领该采购项的家庭，NULL = 尚未有人接
+  claimed_at        TEXT NOT NULL DEFAULT '',       -- 认领时间
+  note              TEXT NOT NULL DEFAULT '',
+  created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- 采购明细（谁买的、买了什么、花了多少）
@@ -91,6 +96,7 @@ CREATE INDEX IF NOT EXISTS idx_members_family    ON members(family_id);
 CREATE INDEX IF NOT EXISTS idx_carry_project     ON carry_items(project_id);
 CREATE INDEX IF NOT EXISTS idx_carry_family      ON carry_items(family_id);
 CREATE INDEX IF NOT EXISTS idx_shopping_project  ON shopping_items(project_id);
+CREATE INDEX IF NOT EXISTS idx_shopping_claimed  ON shopping_items(claimed_family_id);
 CREATE INDEX IF NOT EXISTS idx_purchases_project ON purchases(project_id);
 CREATE INDEX IF NOT EXISTS idx_purchases_family  ON purchases(family_id);
 CREATE INDEX IF NOT EXISTS idx_logs_project      ON logs(project_id, id);

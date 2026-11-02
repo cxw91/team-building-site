@@ -4,15 +4,50 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>团建管理</title>
+  <meta name="theme-color" content="#eeeeee" />
+  <link rel="icon" href="/favicon.ico" type="image/x-icon" />
+  <link rel="apple-touch-icon" href="/favicon.ico" />
+  <script>
+    /* 主题引导：在样式表加载前先把 data-theme 定下来，避免刷新时先闪一下浅色再跳深色。
+       取值顺序：上次选择（localStorage）→ 系统偏好 → 浅色。 */
+    (function () {
+      var t = null;
+      try { t = localStorage.getItem("tb_theme"); } catch (e) {}
+      if (t !== "dark" && t !== "light") {
+        t = window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+      }
+      document.documentElement.setAttribute("data-theme", t);
+    })();
+  </script>
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
+  <!-- 主题图标：线条（描边）风格的太阳与月亮，形状取自用户提供的参考图。
+       只在这里定义一次，项目中心顶栏与项目内顶栏的主题按钮用 <use> 引用；两个图标同一视觉家族（24×24、描边 1.7、
+       圆角端点），描边颜色用 currentColor 跟随按钮的文字令牌。
+       SVG 只是装饰，语义由按钮的 title / aria-label 承担。 -->
+  <svg aria-hidden="true" focusable="false" width="0" height="0" style="position:absolute;width:0;height:0;overflow:hidden">
+    <defs>
+      <symbol id="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="4.3" />
+        <path d="M12 5.6V2.8M12 18.4v2.8M5.6 12H2.8M18.4 12h2.8M7.475 7.475L5.495 5.495M16.525 7.475l1.98-1.98M16.525 16.525l1.98 1.98M7.475 16.525l-1.98 1.98" />
+      </symbol>
+      <symbol id="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.33A9 9 0 1 1 11.67 3.01A7 7 0 0 0 21 12.33Z" />
+      </symbol>
+      <symbol id="icon-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M6 9.5 12 15.5 18 9.5" />
+      </symbol>
+    </defs>
+  </svg>
+
   <!-- 登录 -->
-  <section id="loginView" class="view">
-    <div class="panel center">
+  <section id="loginView" class="view center">
+    <div class="panel">
+      <div class="brand-mark" aria-hidden="true">团</div>
       <h1 class="logo">团建管理</h1>
       <p class="sub">请输入团队口令进入</p>
-      <input id="passcode" type="password" placeholder="口令" autocomplete="current-password" />
+      <input id="passcode" type="password" name="team-passcode" placeholder="口令" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore />
       <button id="loginBtn" class="primary block">进入</button>
       <p id="loginMsg" class="msg"></p>
     </div>
@@ -24,33 +59,40 @@
       <span class="brand">团建管理</span>
       <span class="whoami">项目中心</span>
       <span class="spacer"></span>
+      <button class="link theme-btn" data-action="toggle-theme" type="button" title="切换到深色主题" aria-label="切换到深色主题"><svg class="theme-icon theme-icon--sun" aria-hidden="true" focusable="false"><use href="#icon-sun"></use></svg><svg class="theme-icon theme-icon--moon" aria-hidden="true" focusable="false"><use href="#icon-moon"></use></svg></button>
       <button id="logoutBtn2" class="link">退出</button>
     </header>
     <main class="content">
       <div class="section">
-        <div class="section-head"><span class="title">新建团建项目</span></div>
-        <div class="form-row">
-          <input id="projName" placeholder="项目名称，例如：2026 秋季团建" />
-          <input id="projNote" placeholder="备注（可选）：日期 / 地点" />
-        </div>
-        <div class="section-head" style="margin:14px 0 6px">
-          <span class="title" style="font-size:14px">家庭与成员（手动添加，也可以先建项目、之后再补）</span>
-          <button id="addFamRowBtn" class="link">+ 添加一行</button>
-        </div>
-        <div id="famRows"></div>
-        <button id="createProjBtn" class="primary block">创建并进入项目</button>
-        <p id="homeMsg" class="msg"></p>
-      </div>
-
-      <div class="section">
-        <div class="section-head"><span class="title">历史项目</span><span class="hint" id="projCount"></span></div>
-        <div id="projList"></div>
+        <div class="section-head"><span class="title">我的团建项目</span><span class="hint" id="projCount"></span></div>
+        <div id="projList" class="proj-grid"></div>
       </div>
     </main>
   </section>
 
+  <!-- 新建团建项目弹窗：从「我的团建项目」里的「+」卡片打开 -->
+  <div id="newProjModal" class="modal hidden">
+    <div class="modal-card modal-wide">
+      <h3 class="modal-title">新建团建项目</h3>
+      <div class="form-row">
+        <input id="projName" placeholder="项目名称，例如：2026 秋季团建" />
+        <input id="projNote" placeholder="备注（可选）：日期 / 地点" />
+      </div>
+      <div class="section-head" style="margin:14px 0 6px">
+        <span class="title" style="font-size:14px">家庭与成员（手动添加，也可以先建项目、之后再补）</span>
+        <button id="addFamRowBtn" class="link">+ 添加一行</button>
+      </div>
+      <div id="famRows"></div>
+      <p id="homeMsg" class="msg"></p>
+      <div class="modal-actions">
+        <button id="cancelProjBtn" class="ghost">取消</button>
+        <button id="createProjBtn" class="primary">创建并进入项目</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 选择家庭（项目内） -->
-  <section id="pickView" class="view hidden">
+  <section id="pickView" class="view center hidden">
     <div class="panel">
       <h1 class="logo">你是本项目哪个家庭？</h1>
       <p class="sub" id="pickSub">用于记录操作日志，可随时切换</p>
@@ -70,6 +112,7 @@
       <span class="brand" id="projTitle">团建管理</span>
       <span id="whoami" class="whoami"></span>
       <span class="spacer"></span>
+      <button class="link theme-btn" data-action="toggle-theme" type="button" title="切换到深色主题" aria-label="切换到深色主题"><svg class="theme-icon theme-icon--sun" aria-hidden="true" focusable="false"><use href="#icon-sun"></use></svg><svg class="theme-icon theme-icon--moon" aria-hidden="true" focusable="false"><use href="#icon-moon"></use></svg></button>
       <button id="switchFamilyBtn" class="link">切换家庭</button>
       <button id="homeBtn" class="link">项目中心</button>
       <button id="logoutBtn" class="link">退出</button>
@@ -77,6 +120,20 @@
     <nav id="tabs" class="tabs"></nav>
     <main id="content" class="content"></main>
   </section>
+
+  <!-- 管理权限密码弹窗：删除日志 / 清除全部日志 / 结束项目 / 删除项目 / 重启已结束项目时弹出 -->
+  <div id="adminModal" class="modal hidden">
+    <div class="modal-card">
+      <h3 class="modal-title">需要管理权限</h3>
+      <p class="modal-desc" id="adminReason"></p>
+      <input id="adminPw" type="password" name="admin-passcode" placeholder="请输入管理权限密码" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore />
+      <p id="adminMsg" class="msg"></p>
+      <div class="modal-actions">
+        <button id="adminCancelBtn" class="ghost">取消</button>
+        <button id="adminOkBtn" class="primary">确定</button>
+      </div>
+    </div>
+  </div>
 
   <div id="toast" class="toast hidden"></div>
 
