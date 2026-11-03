@@ -4,16 +4,19 @@
 -- 说明：使用 CREATE TABLE IF NOT EXISTS，重复执行不会破坏已有数据。
 -- 从上一版（单项目、内置 6 个家庭）升级：表结构有变化，请先重建数据库（本地删除 .wrangler/state，
 -- 线上先 DROP 旧表）再执行本文件。
--- 从「多项目版」升级到本版（新增采购清单「接任务」认领字段）：不必重建，执行以下两行即可：
+-- 从「多项目版」升级到「接任务版」（新增采购清单「接任务」认领字段）：不必重建，执行以下两行即可：
 --   ALTER TABLE shopping_items ADD COLUMN claimed_family_id INTEGER;
 --   ALTER TABLE shopping_items ADD COLUMN claimed_at TEXT NOT NULL DEFAULT '';
+-- 从「接任务版」升级到「预算版」（新增项目预算字段）：同样不必重建，执行以下一行即可：
+--   ALTER TABLE projects ADD COLUMN budget REAL NOT NULL DEFAULT 0;
 
 -- 团建项目（顶层容器）
 CREATE TABLE IF NOT EXISTS projects (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   name       TEXT NOT NULL,
   note       TEXT NOT NULL DEFAULT '',             -- 备注：日期 / 地点 / 说明
-  status     TEXT NOT NULL DEFAULT '进行中',        -- 进行中 / 已结束
+status     TEXT NOT NULL DEFAULT '进行中',        -- 进行中 / 已结束
+  budget     REAL NOT NULL DEFAULT 0,              -- 项目预算（元）；0 表示未设置（页面显示「无」）
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 

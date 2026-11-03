@@ -35,14 +35,21 @@ const state = {
   families: [],
   projects: [],
   tab: "overview",
-  lastLogId: 0,
+lastLogId: 0,
   newLogs: 0,
+  logsPending: false,   // 有日志到了但还没画到页面上（重绘被打断时留到下一轮补画，避免被吞掉）
   timer: null,
   pending: null,        // 待确认删除：{ kind, id }
   editingMember: null,  // 正在编辑的成员 id
   editingFamily: null,  // 正在重命名的家庭 id
-  editingProject: null, // 正在改名的项目 id
+editingProject: null, // 正在改名的项目 id
+  editingBudget: false, // 概览里是否正在编辑项目预算
+  overview: null,       // 概览接口最近一次的返回，供预算面板局部重画（不重新拉数据）
   projectStatus: "",    // 当前项目状态：进行中 / 已结束
+  members: [],          // 成员页缓存：进入/退出编辑态、行内确认删除时就地重画，不重新拉接口
+  carryItems: [],       // 携带物品页缓存（同上）
+  shoppingList: [],     // 采购清单页缓存（同上）
+  purchases: [],        // 采购记录页缓存（同上）
   shopItems: [],        // 采购清单里的物品，供「登记一笔采购」的名称候选框使用
   purSuggestOpen: false,// 名称候选框是否展开
   purActive: -1,        // 候选框里键盘高亮到第几项
@@ -146,7 +153,9 @@ const BUSY_ACTIONS = {
   "add-purchase": "登记中…",
   "open-project": "进入中…",
   "toggle-project": "处理中…",
-  "save-project": "保存中…",
+"save-project": "保存中…",
+  "save-budget": "保存中…",
+  "del-project": "删除中…",
 };
 
 // 进入 / 退出加载态。原内容先存进 dataset，退出时原样还原（含行内图标与文字）。
@@ -236,8 +245,9 @@ document.addEventListener("focusin", () => setTimeout(onViewportChange, 80));
 
 function setModalOpen(modal, open) {
   if (!modal) return;
-  if (open) {
-    if (openModal && openModal !== modal) setModalOpen(openModal, false);
+if (open) {
+    // 管理权限密码弹窗允许叠在其它弹窗之上（如「新建项目」表单），不把下面那个关掉
+    if (openModal && openModal !== modal && modal !== $("#adminModal")) setModalOpen(openModal, false);
     openModal = modal;
     modal.classList.remove("hidden");
     syncModalToViewport();
@@ -252,11 +262,14 @@ function setModalOpen(modal, open) {
 }
 
 // ---------- 管理权限密码弹窗 ----------
-// 删除日志、清除全部日志、结束项目、删除项目、重启已结束项目这几类操作统一走这里：
-// 弹出输入框 → 带上密码请求 → 密码不对可以重试 → 点取消则整个操作中止
+// 删除日志、清除全部日志、结束 / 删除 / 重启项目、新建项目、项目改名、设置预算等操作统一走这里：
+// 弹出输入框 → 带上密码请求 → 密码不对可以重试 → 点取消则整个操作中止。
+// 该弹窗可能是叠在另一个弹窗（如「新建项目」表单）之上打开的，关闭时把下面那个还原回来，
+// 免得用户填到一半的表单被连带关掉、输入内容丢失。
 function askAdmin(reason, errText = "") {
   return new Promise((resolve) => {
     const modal = $("#adminModal");
+    modal._prev = openModal && openModal !== modal ? openModal : null;
     $("#adminReason").textContent = reason;
     $("#adminMsg").textContent = errText;
     $("#adminPw").value = "";
@@ -271,8 +284,11 @@ function askAdmin(reason, errText = "") {
 // 关闭弹窗并恢复正常态：取消、请求成功、请求出错都会走这里
 function hideAdmin() {
   const modal = $("#adminModal");
+  const prev = modal._prev || null;
+  modal._prev = null;
   modal._resolve = null;
   setModalOpen(modal, false);
+  if (prev) setModalOpen(prev, true); // 还原被压在下面的弹窗
   $("#adminPw").value = "";
   $("#adminPw").disabled = false;
   $("#adminCancelBtn").disabled = false;
@@ -463,7 +479,7 @@ function renderProjects() {
         <button class="primary shrink" data-action="open-project" data-id="${p.id}" data-name="${esc(p.name)}">进入</button>
         <button class="ghost shrink" data-action="toggle-project" data-id="${p.id}" data-status="${done ? "进行中" : "已结束"}">${done ? "重启" : "结束"}</button>
         <button class="link" data-action="edit-project" data-id="${p.id}">改名</button>
-        ${dangerCell("project", p.id, "del-project")}
+        <button class="link danger" data-action="del-project" data-id="${p.id}">删除</button>
       </div>
     </div>`;
   });
@@ -490,8 +506,18 @@ async function createProject() {
   const btn = $("#createProjBtn");
   if (btn.dataset.busy === "1") return; // 正在创建，忽略重复点击
   setBusy(btn, true, "创建中…");
-  try {
-    const res = await api("/projects", { method: "POST", body: { name, note, families }, withProject: false });
+try {
+    // 新建项目需要管理权限密码
+    let res = null;
+    const ok = await withAdmin(`新建项目「${name}」`, async (pw) => {
+      res = await api("/projects", {
+        method: "POST",
+        body: { name, note, families },
+        withProject: false,
+        adminPw: pw,
+      });
+    });
+    if (!ok) return; // 取消：保留已填内容（弹窗会被还原）
     $("#projName").value = "";
     $("#projNote").value = "";
     $("#famRows").innerHTML = "";
@@ -514,8 +540,9 @@ async function enterProject(id, name) {
   state.lastLogId = 0;
   state.newLogs = 0;
   state.pending = null;
-  state.editingMember = null;
+state.editingMember = null;
   state.editingFamily = null;
+  state.editingBudget = false;
   // 项目名可能已改名，状态也可能变了，取一次最新的
   state.projectStatus = (state.projects.find((p) => p.id === state.projectId) || {}).status || "";
   try {
@@ -610,10 +637,28 @@ async function pickAddFamily() {
 }
 
 // ---------- 主界面 ----------
+// 「切换家庭」就地下拉的内容：列出本项目全部家庭，点一下即切换（不再跳转到单独的选择界面）
+function renderFamilyMenu() {
+  const menu = $("#familyMenu");
+  if (!menu) return;
+  const mine = Number(state.familyId);
+  menu.innerHTML = state.families.length
+    ? state.families
+        .map(
+          (f) =>
+            `<button class="family-item${f.id === mine ? " active" : ""}" data-action="pick-family" data-id="${f.id}" role="menuitem">` +
+            `<span>${esc(f.name)}</span>${f.id === mine ? '<span class="hint">当前</span>' : ""}</button>`
+        )
+        .join("")
+    : '<div class="hint" style="padding:8px 10px">本项目还没有家庭</div>';
+}
+
 function showApp() {
   show("appView");
   $("#projTitle").innerHTML = esc(state.projectName) + (isReadonly() ? ' <span class="tag off">已结束 · 只读</span>' : "");
   $("#whoami").textContent = "当前：" + familyName(state.familyId);
+  renderFamilyMenu();
+  $("#familyMenu").classList.add("hidden"); // 界面重建时先收起下拉
   $("#tabs").innerHTML = TABS.map(
     (t) =>
       `<button class="tab${t.key === state.tab ? " active" : ""}" data-tab="${t.key}">${t.label}` +
@@ -730,24 +775,31 @@ function applyReadonly() {
 // 定时轮询：同步别人的改动 + 拉取新日志
 async function poll() {
   if (!state.token || $("#appView").classList.contains("hidden")) return;
-  let changed = false;
   try {
     const logs = (await api("/logs?since=" + state.lastLogId)).data || [];
     if (logs.length) {
       state.lastLogId = logs[logs.length - 1].id;
-      changed = true;
-      // 日志页本身就在展示最新数据，直接重绘；其他页只加角标，不打断正在填写的内容
+      // 记下「还有日志没画到页面上」：万一这一轮因为正在输入而没有重绘，
+      // 下一次轮询还会把它们补画出来。不能只靠 lastLogId——它已经推进了，这几条再也拉不到，会被吞掉。
+      state.logsPending = true;
+      // 日志页本身就在展示最新数据，直接重绘；其他页只加角标
       if (state.tab !== "logs") {
         state.newLogs += logs.length;
         updateBadge();
       }
     }
   } catch {}
-  // 没有新数据绝不重建页面：手机端每隔 10 秒重绘一次会把没提交的输入清空
-  if (!changed) return;
-  // 正在输入控件里打字时不打断
+  if (!state.logsPending) return; // 没有待画的新数据就绝不重建页面
+  // 只有「输入控件里已经填了内容」才不打断，免得把没提交的输入清空；
+  // 仅仅聚焦、还没填内容的情况（例如刚点开预算输入框）不算，照常刷新。
   const ae = document.activeElement;
-  if (ae && $("#content").contains(ae) && /INPUT|SELECT|TEXTAREA/.test(ae.tagName)) return;
+  const hasTyped =
+    ae &&
+    $("#content").contains(ae) &&
+    /INPUT|SELECT|TEXTAREA/.test(ae.tagName) &&
+    String(ae.type === "checkbox" || ae.type === "radio" ? "" : ae.value || "").length > 0;
+  if (hasTyped) return;
+  state.logsPending = false;
   render();
 }
 
@@ -764,22 +816,96 @@ function updateBadge() {
   }
 }
 
+// ---------- 预算进度 ----------
+// 以「分」为单位的整数比较，避免浮点误差影响 60% / 100% 这两个边界：
+//   进度 < 60%        → green（绿）
+//   60% ≤ 进度 ≤ 100% → orange（橙）
+//   进度 > 100%       → red（红）
+// 预算为 0（未设置）时返回 none，不做任何着色。
+function budgetTone(total, budget) {
+  const bc = Math.round((Number(budget) || 0) * 100);
+  if (!(bc > 0)) return "none";
+  const sc = Math.round((Number(total) || 0) * 100);
+  if (sc * 10 < bc * 6) return "green";
+  if (sc <= bc) return "orange";
+  return "red";
+}
+
+// 生成「总花费 / 预算」一行 + 进度条；预算未设置时只显示总花费与「预算：无」。
+// 显示的整数百分比与颜色档次保持一致：<60% 向下取整（不会显示成 60%）、
+// >100% 向上取整（不会显示成 100%）、60%~100% 四舍五入；分母分子都换成分，
+// 避免浮点抖动（如 0.1+0.2 与 0.3 比较）影响显示。
+function budgetProgressHtml(total, budget, label = "总花费") {
+  const t = Number(total) || 0;
+  const b = Number(budget) || 0;
+  if (!(b > 0)) {
+    return `<div class="budget-line"><span>${label} <b>${money(t)}</b></span><span class="budget-none">预算：无</span></div>`;
+  }
+  const tone = budgetTone(t, b);
+  const rawPct = (Math.round(t * 100) * 100) / Math.round(b * 100);
+  const shown = tone === "green" ? Math.floor(rawPct) : tone === "red" ? Math.ceil(rawPct) : Math.round(rawPct);
+  const width = Math.max(0, Math.min(100, rawPct)); // 进度条封顶 100%，超支由红色提示
+  return `<div class="budget-line">
+      <span>${label} <b>${money(t)}</b> / 预算 <b>${money(b)}</b></span>
+      <span class="budget-pct tone-${tone}">${shown}%</span>
+    </div>
+    <div class="budget-bar" role="progressbar" aria-valuenow="${shown}" aria-valuemin="0" aria-valuemax="${Math.max(100, shown)}"><span class="budget-fill tone-${tone}" style="width:${width.toFixed(2)}%"></span></div>`;
+}
+
+// 「预算与花费进度」面板的正文。概览整页渲染与「修改预算 / 取消」的局部切换共用这一份模板，
+// 保证两种路径产出的 DOM 完全一致。
+function budgetPanelHtml(o) {
+  const hasBudget = Number(o.budget) > 0;
+  return `<div class="section-head">
+        <span class="title">预算与花费进度</span>
+        ${state.editingBudget ? "" : `<button class="link" data-action="edit-budget">${hasBudget ? "修改预算" : "设置预算"}</button>`}
+      </div>
+      ${
+        state.editingBudget
+          ? `<div class="form-row">
+               <input id="budget-input" type="number" min="0" step="0.01" inputmode="decimal" placeholder="预算金额（元）" value="${hasBudget ? o.budget : ""}" />
+               <button class="ghost shrink" data-action="save-budget">保存</button>
+               <button class="link" data-action="cancel-budget">取消</button>
+             </div>
+             <p class="hint" style="margin:8px 0 0">填 0 可取消预算设置；设置 / 修改预算需要管理权限密码。</p>`
+          : budgetProgressHtml(o.total_amount, o.budget)
+      }`;
+}
+
+// 只重画「预算与花费进度」这一块。点「修改预算 / 取消」只是切换一个前端开关、数据没有任何变化，
+// 所以不该整页重渲染、更不该重新拉接口——那样每点一次都要等三个网络往返，手感明显发顿。
+function renderBudgetPanel({ focusInput = false } = {}) {
+  const el = $("#budgetPanel");
+  if (!el || !state.overview) return false; // 没有缓存数据时交给整页渲染兜底
+  el.innerHTML = budgetPanelHtml(state.overview);
+  applyReadonly();
+  if (focusInput) {
+    const i = $("#budget-input");
+    if (i) setTimeout(() => i.focus({ preventScroll: true }), 0);
+  }
+  return true;
+}
+
 // ---------- 概览 ----------
 async function renderOverview() {
   const o = (await api("/overview")).data;
   const st = (await api("/settlement")).data;
   const logs = (await api("/logs?since=0")).data || [];
   state.lastLogId = logs.length ? logs[logs.length - 1].id : 0;
+  state.overview = o; // 缓存一份，供「修改预算 / 取消」局部重画时取用
   const recent = logs.slice(-6).reverse();
+  const hasBudget = Number(o.budget) > 0;
   $("#content").innerHTML = `
     <div class="cards">
       <div class="card"><div class="num">${money(o.total_amount)}</div><div class="lbl">总花费</div></div>
+      <div class="card"><div class="num">${hasBudget ? money(o.budget) : "无"}</div><div class="lbl">项目预算</div></div>
       <div class="card"><div class="num">${st.family_count ? money(st.share) : "—"}</div><div class="lbl">每家应摊（${st.family_count} 家均分）</div></div>
       <div class="card"><div class="num">${o.family_count}</div><div class="lbl">家庭数</div></div>
       <div class="card"><div class="num">${o.member_count}</div><div class="lbl">成员数</div></div>
       <div class="card"><div class="num">${o.carry_done}/${o.carry_total}</div><div class="lbl">携带已带</div></div>
       <div class="card"><div class="num">${o.shopping_done}/${o.shopping_total}</div><div class="lbl">采购已购</div></div>
     </div>
+    <div class="section budget-summary" id="budgetPanel">${budgetPanelHtml(o)}</div>
     <h3>最近操作</h3>
     <div class="logs">${recent.length ? recent.map(logHtml).join("") : '<div class="empty">暂无记录</div>'}</div>
   `;
@@ -794,8 +920,29 @@ function logHtml(l, deletable = false) {
 }
 
 // ---------- 成员（手动添加 / 修改 / 删除） ----------
+// 纯前端切换（进入 / 退出编辑态、行内「确认删除 / 取消」…）后只重画当前页签的内容块：
+// 数据没有任何变化，用缓存重画即可，不必重新拉接口、也不必重建整页。
+function paintCurrentTab() {
+  const map = { members: paintMembers, carry: paintCarry, shopping: paintShopping, purchases: paintPurchases };
+  const paint = map[state.tab];
+  if (!paint) return false; // 当前页签没有对应画匠，就交给整页渲染兜底
+  try {
+    paint();
+    applyReadonly();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function renderMembers() {
-  const mems = (await api("/members")).data || [];
+  state.members = (await api("/members")).data || [];
+  paintMembers();
+}
+
+// 只重画成员页内容（用缓存数据），供纯前端切换调用
+function paintMembers() {
+  const mems = state.members || [];
   const mine = state.familyId;
   const groups = state.families
     .map((f) => {
@@ -868,13 +1015,19 @@ async function renderMembers() {
 
 // ---------- 携带物品 ----------
 async function renderCarry() {
-  const items = (await api("/carry-items")).data || [];
+  state.carryItems = (await api("/carry-items")).data || [];
+  paintCarry();
+}
+
+// 只重画携带物品页内容（用缓存数据）
+function paintCarry() {
+  const items = state.carryItems || [];
   const mine = state.familyId;
   const groups = state.families
     .map((f) => {
       const list = items.filter((i) => i.family_id === f.id);
       const isMine = f.id === mine;
-      return `<div class="section">
+return `<div class="section${isMine ? "" : " readonly"}">
         <div class="section-head">
           <span class="title">${esc(f.name)}${isMine ? ' <span class="mine">（我的家庭）</span>' : ""}</span>
           <span class="hint">${list.length} 项</span>
@@ -914,7 +1067,13 @@ async function renderCarry() {
 
 // ---------- 采购清单 ----------
 async function renderShopping() {
-  const items = (await api("/shopping-items")).data || [];
+  state.shoppingList = (await api("/shopping-items")).data || [];
+  paintShopping();
+}
+
+// 只重画采购清单页内容（用缓存数据）
+function paintShopping() {
+  const items = state.shoppingList || [];
   const waiting = items.filter((i) => i.status === "待购").length;
   const claimed = items.filter((i) => i.claimed_family_id).length;
   $("#content").innerHTML = `
@@ -1055,8 +1214,20 @@ $("#content").addEventListener("keydown", (e) => {
 
 // ---------- 采购记录 ----------
 async function renderPurchases() {
-  const list = (await api("/purchases")).data || [];
-  const shopItems = (await api("/shopping-items")).data || [];
+  state.purchases = (await api("/purchases")).data || [];
+  state.shopItems = (await api("/shopping-items")).data || [];
+  state.overview = (await api("/overview")).data || {};
+  paintPurchases();
+}
+
+// 只重画采购记录页内容（用缓存数据），供纯前端切换调用
+function paintPurchases() {
+  const list = state.purchases || [];
+  const shopItems = state.shopItems || [];
+  const ov = state.overview || {};
+  const budget = Number(ov.budget) || 0;
+  // 总花费按本页列出的采购明细就地汇总，保证与下方明细一致
+  const spent = list.reduce((s, p) => s + (Number(p.amount) || 0), 0);
   state.shopItems = shopItems;   // 供名称候选框过滤
   state.purSuggestOpen = false;  // #content 会被重建成新 DOM，候选框回到收起状态
   state.purActive = -1;
@@ -1065,7 +1236,7 @@ async function renderPurchases() {
   const summary = state.families
     .map((f) => `<span class="tag" style="margin-right:6px">${esc(f.name)} ${money(perFamily[f.id] || 0)}</span>`)
     .join("");
-  $("#content").innerHTML = `
+$("#content").innerHTML = `
     <div class="section">
       <div class="section-head"><span class="title">登记一笔采购</span></div>
       <div class="form-row">
@@ -1077,11 +1248,13 @@ async function renderPurchases() {
         <input id="pur-amount" class="shrink" style="flex:0 0 90px" type="number" min="0" step="0.01" placeholder="金额" />
         <button class="ghost shrink" data-action="add-purchase">登记</button>
       </div>
-      <p class="hint" style="margin:8px 0 0">只记当前家庭「${esc(familyName(state.familyId))}」已经接单、且还没登记过采购的项：点名称框右侧箭头（或点输入框）展开候选选一个，不能自己新增名称；登记后该项在清单里变成「已购」，也不再出现在候选里。</p>
+<p class="hint" style="margin:8px 0 0">只记当前家庭「${esc(familyName(state.familyId))}」已经接单、且还没登记过采购的项：点名称框右侧箭头（或点输入框）展开候选选一个，不能自己新增名称；登记后该项在清单里变成「已购」，也不再出现在候选里。</p>
     </div>
-    <div class="section">
+    <!-- 「各家采购金额」面板用普通面板底色（与上方「登记一笔采购」一致）；进度条与百分比仍按档位着色 -->
+    <div class="section budget-summary">
       <div class="section-head"><span class="title">各家采购金额</span></div>
-      <div>${summary || '<span class="hint">还没有家庭</span>'}</div>
+      ${budgetProgressHtml(spent, budget)}
+      <div style="margin-top:10px">${summary || '<span class="hint">还没有家庭</span>'}</div>
     </div>
     <div class="section">
       <div class="section-head"><span class="title">采购明细</span><span class="hint">${list.length} 笔</span></div>
@@ -1108,7 +1281,7 @@ async function renderPurchases() {
 async function renderSettlement() {
   const s = (await api("/settlement")).data;
   $("#content").innerHTML = `
-    <div class="cards" style="margin-bottom:12px">
+<div class="cards">
       <div class="card"><div class="num">${money(s.total)}</div><div class="lbl">总花费</div></div>
       <div class="card"><div class="num">${money(s.share)}</div><div class="lbl">每家应摊（${s.family_count} 家均分）</div></div>
     </div>
@@ -1191,48 +1364,58 @@ $("#content").addEventListener("click", async (e) => {
         if (state.familyId && !state.families.some((f) => f.id === Number(state.familyId))) {
           state.familyId = null;
           localStorage.removeItem(familyKey(state.projectId));
-        }
+}
       }
     } else if (action === "cancel-del") {
+      // 收起行内「确认删除」：纯前端切换，只重画当前页签
       state.pending = null;
+      if (paintCurrentTab()) return;
     } else if (action === "del-member" || action === "del-family" || action === "del-carry" || action === "del-shop" || action === "del-purchase") {
+      // 点「删除」先进行内确认态：同样是纯前端切换
       state.pending = { kind, id: Number(id) };
+      if (paintCurrentTab()) return;
     } else if (action === "del-log") {
       const ok = await withAdmin("删除这条操作日志", async (pw) => {
         await api("/logs/" + id, { method: "DELETE", adminPw: pw });
       });
-      if (ok) toast("日志已删除");
+      if (!ok) return; // 密码框点了「取消」：什么都没变，不必重渲染
+      toast("日志已删除");
     } else if (action === "clear-logs") {
       // 一键清除本项目全部日志：不可恢复，清除前必须输入管理权限密码
       const ok = await withAdmin("清除本项目全部操作日志（清除后不可恢复）", async (pw) => {
         await api("/logs", { method: "DELETE", adminPw: pw });
       });
-      if (ok) {
-        state.lastLogId = 0;
-        state.newLogs = 0;
-        toast("全部日志已清除");
-      }
+      if (!ok) return; // 同上：取消不重渲染
+      state.lastLogId = 0;
+      state.newLogs = 0;
+      toast("全部日志已清除");
     } else if (action === "add-member") {
       const names = splitNames($("#mem-name-" + fid).value);
       if (!names.length) return toast("请输入成员姓名");
       const note = $("#mem-note-" + fid).value.trim();
       for (const n of names) await api("/members", { method: "POST", body: { name: n, family_id: Number(fid), note } });
-      clearFields("mem-name-" + fid, "mem-note-" + fid);
+clearFields("mem-name-" + fid, "mem-note-" + fid);
     } else if (action === "edit-member") {
+      // 进入编辑态：纯前端切换，只重画成员页
       state.editingMember = Number(id);
       state.editingFamily = null;
+      if (paintCurrentTab()) return;
     } else if (action === "cancel-member-edit") {
       state.editingMember = null;
+      if (paintCurrentTab()) return;
     } else if (action === "save-member") {
       const name = $("#mem-edit-name-" + id).value.trim();
       if (!name) return toast("请输入成员姓名");
       await api("/members/" + id, { method: "PUT", body: { name, note: $("#mem-edit-note-" + id).value.trim() } });
       state.editingMember = null;
     } else if (action === "edit-family") {
+      // 进入重命名编辑态：同上，只重画成员页
       state.editingFamily = Number(id);
       state.editingMember = null;
+      if (paintCurrentTab()) return;
     } else if (action === "cancel-family-edit") {
       state.editingFamily = null;
+      if (paintCurrentTab()) return;
     } else if (action === "save-family") {
       const name = $("#fam-edit-name-" + id).value.trim();
       if (!name) return toast("请输入家庭名称");
@@ -1300,7 +1483,29 @@ $("#content").addEventListener("click", async (e) => {
         method: "POST",
         body: { item_name: itemName, amount, family_id: Number(state.familyId), item_id: matched.id },
       });
-      clearFields("pur-item", "pur-amount");
+clearFields("pur-item", "pur-amount");
+    } else if (action === "edit-budget") {
+      // 纯前端切换：只重画面板这一块、不重新拉数据，点了立刻出现输入框
+      state.editingBudget = true;
+      if (renderBudgetPanel({ focusInput: true })) return;
+    } else if (action === "cancel-budget") {
+      // 同理：只是收起输入框，立即生效
+      state.editingBudget = false;
+      if (renderBudgetPanel()) return;
+    } else if (action === "save-budget") {
+      const raw = $("#budget-input").value.trim();
+      const val = raw === "" ? 0 : Number(raw);
+      if (!Number.isFinite(val) || val < 0) return toast("请输入不小于 0 的预算金额");
+      const ok = await withAdmin(
+        val > 0 ? `将项目预算设为 ${money(val)}` : "取消预算设置（预算改为「无」）",
+        async (pw) => {
+          await api("/projects/" + state.projectId, { method: "PUT", body: { budget: val }, withProject: false, adminPw: pw });
+        }
+      );
+      if (!ok) return; // 取消操作：保持编辑态，输入内容不丢
+      state.editingBudget = false;
+      await loadProjects();
+      toast(val > 0 ? "预算已更新为 " + money(val) : "已取消预算设置");
     }
     await render();
   } catch (err) {
@@ -1330,14 +1535,14 @@ $("#homeView").addEventListener("click", async (e) => {
       openNewProj();
       return;
     }
-    if (action === "confirm-del") {
-      state.pending = null;
+if (action === "del-project") {
+      // 点「删除」直接弹管理权限密码，不再走行内「确认删除 / 取消」
       const target = state.projects.find((x) => x.id === Number(id));
       const label = target ? target.name : "该项目";
       const ok = await withAdmin(`删除项目「${label}」及其全部数据`, async (pw) => {
         await api("/projects/" + id, { method: "DELETE", withProject: false, adminPw: pw });
       });
-      if (!ok) return renderProjects();
+      if (!ok) return renderProjects(); // 取消：数据无变化，重绘即可
       if (Number(id) === state.projectId) {
         state.projectId = null;
         state.projectName = "团建管理";
@@ -1348,14 +1553,6 @@ $("#homeView").addEventListener("click", async (e) => {
       renderProjects();
       toast("项目已删除");
       return;
-    }
-    if (action === "cancel-del") {
-      state.pending = null;
-      return renderProjects();
-    }
-    if (action === "del-project") {
-      state.pending = { kind: "project", id: Number(id) };
-      return renderProjects();
     }
     if (action === "open-project") {
       await enterProject(Number(id), name);
@@ -1385,10 +1582,16 @@ $("#homeView").addEventListener("click", async (e) => {
       state.editingProject = null;
       return renderProjects();
     }
-    if (action === "save-project") {
+if (action === "save-project") {
       const newName = $("#proj-edit-name-" + id).value.trim();
       if (!newName) return toast("请输入项目名称");
-      await api("/projects/" + id, { method: "PUT", body: { name: newName }, withProject: false });
+      const target = state.projects.find((x) => x.id === Number(id));
+      const oldName = target ? target.name : "该项目";
+      // 项目改名需要管理权限密码
+      const ok = await withAdmin(`把项目「${oldName}」改名为「${newName}」`, async (pw) => {
+        await api("/projects/" + id, { method: "PUT", body: { name: newName }, withProject: false, adminPw: pw });
+      });
+      if (!ok) return; // 取消：保持改名编辑态，输入内容不丢
       state.editingProject = null;
       await loadProjects();
       renderProjects();
@@ -1418,12 +1621,44 @@ $("#logoutBtn").addEventListener("click", logout);
 $("#logoutBtn2").addEventListener("click", logout);
 $("#backHomeBtn").addEventListener("click", showHome);
 $("#homeBtn").addEventListener("click", showHome);
-$("#switchFamilyBtn").addEventListener("click", () =>
-  runBusy($("#switchFamilyBtn"), "加载中…", async () => {
-    await loadFamilies();
-    showPick();
-  })
-);
+// 「切换家庭」：就地下拉，不再跳到单独的选择界面
+$("#switchFamilyBtn").addEventListener("click", async (e) => {
+  e.stopPropagation();
+  const menu = $("#familyMenu");
+  if (!menu.classList.contains("hidden")) {
+    menu.classList.add("hidden");
+    $("#switchFamilyBtn").setAttribute("aria-expanded", "false");
+    return;
+  }
+  // 直接用已缓存的家庭列表（state.families）展开，不再为打开下拉重新请求一次
+  renderFamilyMenu();
+  menu.classList.remove("hidden");
+  $("#switchFamilyBtn").setAttribute("aria-expanded", "true");
+  // 默认以按钮左边缘对齐（正好在「切换家庭」文字下方）；窄屏上若右边会超出视口，就把它整体左移一点
+  menu.style.marginLeft = "0px";
+  const wrapRect = menu.parentElement.getBoundingClientRect();
+  const overflow = wrapRect.left + menu.getBoundingClientRect().width - (window.innerWidth - 8);
+  if (overflow > 0) menu.style.marginLeft = `-${Math.min(overflow, Math.max(wrapRect.left - 8, 0))}px`;
+});
+
+// 点下拉里的家庭即切换（只改本机记录的操作家庭，不写库）
+$("#familyMenu").addEventListener("click", (e) => {
+  const btn = e.target.closest("[data-action='pick-family']");
+  if (!btn) return;
+  state.familyId = Number(btn.dataset.id);
+  localStorage.setItem(familyKey(state.projectId), String(state.familyId));
+  showApp(); // 重建界面：当前家庭标识与各页数据随之更新
+  toast("已切换到 " + familyName(state.familyId));
+});
+
+// 点下拉以外的地方收起下拉
+document.addEventListener("click", (e) => {
+  const menu = $("#familyMenu");
+  if (!menu || menu.classList.contains("hidden")) return;
+  if (e.target.closest("#familyMenu") || e.target.closest("#switchFamilyBtn")) return;
+  menu.classList.add("hidden");
+  $("#switchFamilyBtn").setAttribute("aria-expanded", "false");
+});
 
 // 管理权限密码弹窗
 $("#adminOkBtn").addEventListener("click", submitAdmin);

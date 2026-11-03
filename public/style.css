@@ -249,6 +249,47 @@ button:active { transform: translateY(1px); }
 .whoami { color: var(--muted); font-size: 13px; }
 .spacer { flex: 1; }
 
+/* 「切换家庭」就地下拉：紧贴「切换家庭」这四个字的下方展开。
+   .switch-wrap 是包住按钮的定位容器，菜单以它的左边缘为基准，正好落在按钮文字下方；
+   窄屏上若右边会超出视口，由 app.js（switchFamilyBtn 的点击回调）兜底整体左移。 */
+.switch-wrap { position: relative; display: inline-flex; align-items: center; }
+.family-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 20;
+  min-width: 128px;
+  max-width: min(260px, calc(100vw - 24px));
+  max-height: 60vh;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px rgba(var(--shadow-rgb), 0.18);
+}
+.family-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border: none;
+  border-radius: 8px;
+background: none;
+  color: var(--text);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+.family-item:hover { background: var(--card-2); }
+.family-item.active { background: var(--primary-soft); color: var(--primary-soft-text); font-weight: 600; }
+.family-item .hint { font-size: 12px; }
+
 /* 标签页 */
 .tabs {
   position: sticky;
@@ -291,7 +332,12 @@ h3 { font-size: 15px; margin: 18px 0 10px; }
 .hint { color: var(--muted); font-size: 13px; }
 
 /* 卡片 */
-.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; }
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 10px;
+  margin-bottom: 12px; /* 卡片区与下方 .section 的间距，与 .section 之间的 12px 保持一致 */
+}
 .card {
   background: var(--card);
   border: 1px solid var(--line);
@@ -318,6 +364,43 @@ h3 { font-size: 15px; margin: 18px 0 10px; }
 .mine { color: var(--primary); font-size: 12px; }
 /* 成员页：其他家庭只读区（浅底与其他家庭区分） */
 .section.readonly { background: var(--card-2); }
+
+/* 预算：概览与采购记录里的「总花费 / 预算」进度条。
+   进度 < 60% 绿、60%~100% 橙、>100% 红；未设置预算（无）时不着色。
+   具体档次由 app.js 的 budgetTone() 按「分」整数比较算出，这里只做色彩映射。 */
+.budget-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 14px;
+}
+.budget-line b { font-weight: 700; }
+.budget-line .budget-pct { font-weight: 700; font-variant-numeric: tabular-nums; }
+.budget-line .budget-none { color: var(--muted); }
+.budget-bar {
+  margin-top: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--card-2);
+  overflow: hidden;
+}
+.budget-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--muted);
+  transition: width 0.2s ease;
+}
+/* 进度百分比与进度条按档次着色 */
+.budget-pct.tone-green { color: var(--green-soft-text); }
+.budget-fill.tone-green { background: var(--green-soft-text); }
+.budget-pct.tone-orange { color: var(--warning-text); }
+.budget-fill.tone-orange { background: var(--warning-text); }
+.budget-pct.tone-red { color: var(--danger-text); }
+.budget-fill.tone-red { background: var(--danger-fill); }
+/* 面板本体不跟着档位变色：概览的「预算与花费进度」与采购记录的「各家采购金额」都用普通面板底色
+   （与「总花费」卡片同为 var(--card)），只有进度条与百分比按档位着色（见上面的 .budget-pct / .budget-fill）。 */
 
 .row {
   display: flex;
@@ -691,7 +774,7 @@ html[data-theme="dark"] .theme-icon--moon { display: none; }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 0;
+border: 0;
   background: transparent;
   color: var(--muted);
   border-radius: 8px;
@@ -740,4 +823,85 @@ html[data-theme="dark"] .theme-icon--moon { display: none; }
 .combo-list .combo-empty { padding: 9px 10px; color: var(--muted); font-size: 13px; }
 @media (prefers-reduced-motion: reduce) {
   .combo-caret { transition: none; }
+}
+
+/* ============ 表单控件与操作按钮的统一尺寸 / 底色 ============
+   1) 表单行里的输入框与「添加 / 登记 / 新增」按钮等高，同一行左右两侧上下边缘齐平；
+   2) 项目中心卡片上的「进入 / 结束 / 改名 / 删除」统一收成一行紧凑的小按钮；
+   3) 概览「预算与花费进度」右上角按钮与下方右端的「预算：无 / 预算：¥金额」右边缘齐平。 */
+
+/* 1) 表单行 / 新增行：输入框、下拉框、组合框与按钮统一 40px 高。
+      按钮配 line-height:1，让文字在固定高度里垂直居中、不被裁切。 */
+.form-row > input,
+.form-row > select,
+.form-row > .combo,
+.add-row > input,
+.form-row > button,
+.add-row > button {
+  height: 40px;
+}
+.form-row > button,
+.add-row > button {
+  line-height: 1;
+}
+
+/* 2) 项目卡片操作区：四个按钮统一 36px 高的小尺寸（「进入 / 结束」明显变小） */
+.proj-card .actions button {
+  height: 36px;
+  padding: 0 13px;
+  font-size: 13.5px;
+  line-height: 1;
+}
+
+/* 3) 概览预算面板：头部按钮去掉左右内边距，使其文字右边缘与「预算：无 / 预算：¥」右边缘齐平 */
+.budget-summary .section-head .link {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+/* ============ 按钮底色：只保留「成对 / 行内操作」这类按钮 ============
+   上一轮给所有文字型按钮加的底色已还原：`.link` 恢复无底色，未激活页签、家庭下拉项、
+   物品名称框的下拉箭头也一并还原。下面这几类仍按按钮呈现，因为它们总是和保存 / 进入 / 结束
+   等按钮同排出现，还原成纯文字会显得高低不齐：
+   · 改名 / 重命名 / 修改（edit-*）
+   · 删除（del-*；采购清单行内的「删除」本来就有自己的胶囊样式，不在此列）
+   · 行内「确认删除 / 取消」（confirm-del / cancel-del）
+   · 与「保存」成对的「取消」（cancel-*） */
+.link[data-action="edit-project"],
+.link[data-action="edit-family"],
+.link[data-action="edit-member"],
+.link[data-action="del-project"],
+.link[data-action="del-family"],
+.link[data-action="del-member"],
+.link[data-action="del-carry"],
+.link[data-action="del-log"],
+.link[data-action="confirm-del"],
+.link[data-action="cancel-del"],
+.link[data-action="cancel-project-edit"],
+.link[data-action="cancel-family-edit"],
+.link[data-action="cancel-member-edit"],
+.link[data-action="cancel-budget"] {
+  background: var(--btn-bg-2);
+}
+
+/* 成员 / 家庭编辑里的「保存 · 取消」：一个带描边、一个不带边框，统一高度 / 内边距 / 字号后
+   并排等大。概览预算编辑行的「保存 · 取消」本就在 .form-row 内（同为 40px），项目中心改名
+   的那一对在 .proj-card .actions 内（同为 36px），都无需再改。 */
+button[data-action="save-family"],
+button[data-action="cancel-family-edit"],
+button[data-action="save-member"],
+button[data-action="cancel-member-edit"] {
+  height: 34px;
+  padding: 0 12px;
+  font-size: 14px;
+  line-height: 1;
+}
+/* 「取消」不带描边、「保存」带 1px 边框，宽度会差 2px；给「取消」补一层透明边框，
+   两者外框尺寸完全一致，并排看起来才是同一个尺寸。 */
+.link[data-action="cancel-project-edit"],
+.link[data-action="cancel-family-edit"],
+.link[data-action="cancel-member-edit"],
+.link[data-action="cancel-budget"],
+.link[data-action="cancel-del"] {
+  border: 1px solid transparent;
 }

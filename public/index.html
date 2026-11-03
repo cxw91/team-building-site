@@ -113,7 +113,10 @@
       <span id="whoami" class="whoami"></span>
       <span class="spacer"></span>
       <button class="link theme-btn" data-action="toggle-theme" type="button" title="切换到深色主题" aria-label="切换到深色主题"><svg class="theme-icon theme-icon--sun" aria-hidden="true" focusable="false"><use href="#icon-sun"></use></svg><svg class="theme-icon theme-icon--moon" aria-hidden="true" focusable="false"><use href="#icon-moon"></use></svg></button>
-      <button id="switchFamilyBtn" class="link">切换家庭</button>
+<span class="switch-wrap">
+        <button id="switchFamilyBtn" class="link" aria-haspopup="menu" aria-expanded="false">切换家庭</button>
+        <div id="familyMenu" class="family-menu hidden" role="menu" aria-label="切换家庭"></div>
+      </span>
       <button id="homeBtn" class="link">项目中心</button>
       <button id="logoutBtn" class="link">退出</button>
     </header>

@@ -127,7 +127,7 @@ export async function onRequest(context) {
     // 其余业务接口都需要项目上下文，且项目必须真实存在
     const projectId = requestProjectId(request);
     if (!projectId) return err("缺少项目信息，请先选择或新建团建项目", 400);
-    const proj = await env.DB.prepare("SELECT id, name, status FROM projects WHERE id = ?").bind(projectId).first();
+    const proj = await env.DB.prepare("SELECT id, name, status, budget FROM projects WHERE id = ?").bind(projectId).first();
     if (!proj) return err("项目不存在或已被删除", 404);
 
     // 已结束的项目只读：查看没问题，但项目内任何内容都不能再改
@@ -196,7 +196,10 @@ async function handleProjects(env, method, id, request) {
     return json({ ok: true, data: { project, families, members } });
   }
 
-  if (method === "POST") {
+if (method === "POST") {
+    // 新建项目属于需要管理权限密码的操作（与结束 / 删除项目同一套 ADMIN_PASSCODE）
+    const denied = requireAdmin(request, env);
+    if (denied) return denied;
     const b = await readJson(request);
     const name = String((b && b.name) || "").trim();
     if (!name) return err("缺少项目名称");
@@ -246,12 +249,36 @@ async function handleProjects(env, method, id, request) {
   if (method === "PUT") {
     if (!id) return err("缺少 id");
     const old = await env.DB.prepare("SELECT * FROM projects WHERE id = ?").bind(id).first();
-    if (!old) return err("项目不存在", 404);
+if (!old) return err("项目不存在", 404);
     const b = (await readJson(request)) || {};
     const nextName = String(b.name ?? old.name).trim() || old.name;
     const nextStatus = String(b.status ?? old.status).trim() || old.status;
 
-    // 已结束的项目只能查看：改名 / 改备注 / 再次结束都不允许
+    // 预算（元）：可设置、修改或清零（0 表示未设置，页面显示「无」）。
+    // 请求体里没带 budget 字段时保持原值；带了就按数字校验并写库。
+    const round2 = (v) => Math.round((Number(v) || 0) * 100) / 100;
+    const budgetWas = round2(old.budget);
+    const hasBudget = b.budget !== undefined && b.budget !== null && b.budget !== "";
+    let nextBudget = budgetWas;
+    if (hasBudget) {
+      const bv = Number(b.budget);
+      if (!Number.isFinite(bv) || bv < 0) return err("预算必须是不小于 0 的数字");
+      if (bv > 100000000) return err("预算金额过大，请填写不超过 1 亿元的数字");
+      nextBudget = round2(bv);
+    }
+    const budgetChanged = hasBudget && nextBudget !== budgetWas;
+    // 设置 / 修改 / 取消预算都属于高风险操作，需要管理权限密码（与删除日志等同一套 ADMIN_PASSCODE）
+    if (hasBudget) {
+      const denied = requireAdmin(request, env);
+      if (denied) return denied;
+    }
+    // 项目改名同样需要管理权限密码；只改备注等其它字段不需要
+    if (nextName !== old.name) {
+      const denied = requireAdmin(request, env);
+      if (denied) return denied;
+    }
+
+    // 已结束的项目只能查看：改名 / 改备注 / 改预算 / 再次结束都不允许
     const isRestart = old.status === "已结束" && nextStatus === "进行中";
     if (old.status === "已结束" && !isRestart) {
       return err("项目已结束，只能查看；如需修改请先用管理权限密码重启项目", 403);
@@ -264,16 +291,37 @@ async function handleProjects(env, method, id, request) {
     }
 
     await env.DB
-      .prepare("UPDATE projects SET name = ?, note = ?, status = ? WHERE id = ?")
-      .bind(nextName, String(b.note ?? old.note), nextStatus, id)
+      .prepare("UPDATE projects SET name = ?, note = ?, status = ?, budget = ? WHERE id = ?")
+      .bind(nextName, String(b.note ?? old.note), nextStatus, nextBudget, id)
       .run();
-    await addLog(env, id, {
-      familyId: null,
-      action: nextStatus !== old.status ? `项目状态改为「${nextStatus}」` : "修改项目",
-      targetType: "project",
-      targetId: id,
-      detail: nextName,
-    });
+    const fmtBudget = (v) => (Number(v) > 0 ? `¥${round2(v).toFixed(2)}` : "无");
+    if (budgetChanged) {
+      await addLog(env, id, {
+        familyId: null,
+        action: nextBudget > 0 ? (budgetWas > 0 ? "修改预算" : "设置预算") : "取消预算设置",
+        targetType: "project",
+        targetId: id,
+        detail: `预算 ${fmtBudget(budgetWas)} → ${fmtBudget(nextBudget)}`,
+      });
+    }
+    if (nextStatus !== old.status) {
+      await addLog(env, id, {
+        familyId: null,
+        action: `项目状态改为「${nextStatus}」`,
+        targetType: "project",
+        targetId: id,
+        detail: nextName,
+      });
+    }
+    if (!budgetChanged && nextStatus === old.status) {
+      await addLog(env, id, {
+        familyId: null,
+        action: "修改项目",
+        targetType: "project",
+        targetId: id,
+        detail: nextName,
+      });
+    }
     return json({ ok: true });
   }
 
@@ -901,8 +949,9 @@ async function computeOverview(env, projectId, project) {
   const shopDone = ((await env.DB.prepare("SELECT COUNT(*) AS c FROM shopping_items WHERE project_id = ? AND status = '已购'").bind(projectId).first()) || {}).c || 0;
 
   return {
-    project: project ? { id: project.id, name: project.name, status: project.status } : null,
+project: project ? { id: project.id, name: project.name, status: project.status } : null,
     total_amount: Math.round((Number(total) || 0) * 100) / 100,
+    budget: Math.round((Number(project && project.budget) || 0) * 100) / 100,
     family_count: famCount,
     member_count: memCount,
     carry_total: carryTotal,
