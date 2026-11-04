@@ -56,6 +56,9 @@
   --shadow-rgb: 23, 32, 58;
 
   --radius: 12px;
+  /* 顶栏高度：只给 .tabs 的 sticky top 用，保持与顶栏对齐。
+     若以后顶栏内容改高，只改这一处即可。 */
+  --topbar-h: 49px;
 }
 
 /* 深色主题：取值全部来自「深色主题.html」 */
@@ -265,7 +268,7 @@ button:active { transform: translateY(1px); }
   border-bottom: 1px solid var(--line);
 }
 .brand { font-weight: 700; }
-.whoami { color: var(--muted); font-size: 13px; }
+.whoami { color: var(--primary); font-size: 13px; }
 .spacer { flex: 1; }
 
 /* 「切换家庭」就地下拉：紧贴「切换家庭」这四个字的下方展开。
@@ -312,7 +315,7 @@ background: none;
 /* 标签页 */
 .tabs {
   position: sticky;
-  top: 49px;
+  top: var(--topbar-h); /* 与顶栏对齐：改高只需改 --topbar-h */
   z-index: 9;
   display: flex;
   gap: 4px;
@@ -516,6 +519,9 @@ input.secret-masked { -webkit-text-security: disc; }
   -webkit-overflow-scrolling: touch;
 }
 .modal.modal-tight .modal-card { margin-bottom: 10px; }
+/* modal-tight 时滚动统一交给外层 .modal：卡片自身不再设 max-height / overflow，
+   避免内层和外层两个滚动容器嵌套，手机上滚动容易卡住或滚错层。 */
+.modal.modal-tight .modal-card { max-height: none; overflow: visible; }
 
 /* 已结束项目的只读提示条 */
 .banner {
@@ -541,7 +547,8 @@ input.secret-masked { -webkit-text-security: disc; }
   padding: 10px 16px;
   border-radius: 10px;
   font-size: 14px;
-  z-index: 99;
+  /* 高于弹窗遮罩（.modal 是 200）：弹窗打开期间的提示（如密码错误重试）不被盖住 */
+  z-index: 300;
   pointer-events: none; /* 不遮挡底部按钮 */
 }
 .empty { color: var(--muted); text-align: center; padding: 18px; font-size: 14px; }
@@ -871,6 +878,14 @@ border: 0;
   font-size: 13.5px;
   line-height: 1;
 }
+/* 2b) 项目卡片操作区的加载态：只显示转圈、宽度锁在原值（宽度由 app.js 的 setBusy 设为 min-width），
+   转圈居中显示。这样点击「进入 / 结束 / 改名 / 删除」时按钮不会变宽，同排按钮不会被挤到下一行。 */
+.proj-card .actions button.is-loading {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.proj-card .actions button.is-loading .btn-spin { margin-right: 0; }
 
 /* 3) 概览预算面板：头部按钮去掉左右内边距，使其文字右边缘与「预算：无 / 预算：¥」右边缘齐平 */
 .budget-summary .section-head .link {

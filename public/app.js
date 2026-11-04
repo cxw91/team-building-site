@@ -6,6 +6,13 @@ const money = (n) => "¥" + (Math.round((Number(n) || 0) * 100) / 100).toFixed(2
 // 成员姓名一次可填多个：用逗号（中英文「,」「，」）分隔；同时兼容「、」等旧写法，避免历史习惯报错
 const splitNames = (s) => String(s || "").split(/[,，、;；/|\s]+/).map((x) => x.trim()).filter(Boolean);
 
+// 几个反复出现的时长集中在这里，避免散落在各处
+const POLL_MS = 10000;       // 轮询间隔
+const REVALIDATE_MS = 1000;  // 页签后台刷新的防抖窗口
+const MODAL_TIGHT_H = 480;   // 软键盘弹出后弹窗切「贴顶 + 内部滚动」的高度阈值
+const FOCUSOUT_DELAY = 150;  // 候选框 focusout 延迟收起
+const FOCUS_CORRECT_DELAY = 80; // 输入框聚焦后校正弹窗位置
+
 // 后端时间统一为 UTC 的 "YYYY-MM-DD HH:MM:SS"，这里转成本地时间显示
 function fmtTime(s) {
   if (!s) return "";
@@ -163,38 +170,100 @@ const BUSY_ACTIONS = {
   "del-project": "删除中…",
 };
 
+// 加载态「外观」这一层：转圈 + 文案 + 禁用。业务状态（dataset.busy / dataset.raw）由 setBusy 维护，
+// 拆出来是为了在后台重画后能把同样的外观刷到新元素上（见 reapplyInflight）。
+function paintBusy(el, label) {
+  el.classList.add("is-loading");
+  el.setAttribute("aria-busy", "true");
+  el.disabled = true;
+  const busyText = label || "处理中…";
+  // 项目卡片的操作区很窄：加载态只转圈、并把按钮锁在原宽。
+  // 否则「进入中…」这类变长的文字会把同排的「结束 / 改名 / 删除」挤到下一行。
+  if (el.closest(".proj-card .actions")) {
+    if (!el.style.minWidth) el.style.minWidth = Math.round(el.getBoundingClientRect().width) + "px";
+    el.setAttribute("aria-label", busyText); // 文案仍对读屏可见，只是不占版面
+    el.innerHTML = `<span class="btn-spin" aria-hidden="true"></span>`;
+  } else {
+    el.innerHTML = `<span class="btn-spin" aria-hidden="true"></span>${esc(busyText)}`;
+  }
+}
+// 收掉加载态外观，并（若能）把原内容还原回来
+function clearBusyLook(el) {
+  el.classList.remove("is-loading");
+  el.removeAttribute("aria-busy");
+  el.removeAttribute("aria-label");
+  el.style.removeProperty("min-width");
+  if (el.dataset.raw != null) el.innerHTML = el.dataset.raw;
+  delete el.dataset.busy;
+  delete el.dataset.raw;
+  el.disabled = false;
+}
+
+// 正在进行中的请求：key = "<动作>#<kind>:<id>" → 加载态文案。
+// 把 data-kind 也编进 key：`confirm-del` 的 data-id 在不同实体（member id=3 与 family id=3）
+// 之间可能重复，带上 kind 才能保证「同一实体」的加载态被精确搬到新元素上。
+const INFLIGHT = new Map();
+function inflightKey(btn) {
+  const action = btn && btn.dataset ? btn.dataset.action : "";
+  if (!action) return "";
+  const kind = btn.dataset.kind ? btn.dataset.kind + ":" : "";
+  return action + "#" + kind + (btn.dataset.id || "");
+}
+function findBusyTarget(key) {
+  const i = key.indexOf("#");
+  if (i < 0) return null;
+  const action = key.slice(0, i);
+  const rest = key.slice(i + 1);
+  const j = rest.indexOf(":");
+  const kind = j >= 0 ? rest.slice(0, j) : "";
+  const id = j >= 0 ? rest.slice(j + 1) : rest;
+  const parts = [`[data-action="${action}"]`];
+  if (id) parts.push(`[data-id="${id}"]`);
+  if (kind) parts.push(`[data-kind="${kind}"]`);
+  return document.querySelector(parts.join(""));
+}
+function reapplyInflight() {
+  if (!INFLIGHT.size) return;
+  INFLIGHT.forEach((label, key) => {
+    const el = findBusyTarget(key);
+    if (!el || el.dataset.busy === "1") return;
+    // 不能调 paintBusy：它会把当前 innerHTML（可能已经是上一轮留下的转圈 HTML）
+    // 当作 raw 原始内容存下来，退出加载态时恢复的就是转圈而不是原始按钮文字。
+    // 直接设置加载态外观，保留 paint()/DOM 重建时已存好的 dataset.raw。
+    el.dataset.busy = "1";
+    if (el.dataset.raw == null) el.dataset.raw = el.innerHTML;
+    el.classList.add("is-loading");
+    el.setAttribute("aria-busy", "true");
+    el.disabled = true;
+    const busyText = label || "处理中…";
+    if (el.closest(".proj-card .actions")) {
+      if (!el.style.minWidth) el.style.minWidth = Math.round(el.getBoundingClientRect().width) + "px";
+      el.setAttribute("aria-label", busyText);
+      el.innerHTML = `<span class="btn-spin" aria-hidden="true"></span>`;
+    } else {
+      el.innerHTML = `<span class="btn-spin" aria-hidden="true"></span>${esc(busyText)}`;
+    }
+  });
+}
+
 // 进入 / 退出加载态。原内容先存进 dataset，退出时原样还原（含行内图标与文字）。
 function setBusy(btn, busy, label) {
   if (!btn) return;
+  const key = inflightKey(btn);
   if (busy) {
     if (btn.dataset.busy === "1") return; // 已在处理中，不重复进入
     btn.dataset.busy = "1";
     btn.dataset.raw = btn.innerHTML;
-    btn.classList.add("is-loading");
-    btn.setAttribute("aria-busy", "true");
-    btn.disabled = true;
-    btn.innerHTML = `<span class="btn-spin" aria-hidden="true"></span>${esc(label || "处理中…")}`;
+    paintBusy(btn, label);
+    if (key) INFLIGHT.set(key, label || "处理中…");
   } else {
     if (btn.dataset.busy !== "1") return;
-    delete btn.dataset.busy;
-    btn.classList.remove("is-loading");
-    btn.removeAttribute("aria-busy");
-    if (btn.isConnected) {
-      btn.disabled = false;
-      if (btn.dataset.raw != null) btn.innerHTML = btn.dataset.raw;
+    clearBusyLook(btn);
+    if (key && INFLIGHT.delete(key)) {
+      // 中途可能被重画换成了新元素，那个新元素上的加载态也一并收干净
+      const el = findBusyTarget(key);
+      if (el && el !== btn && el.dataset.busy === "1") clearBusyLook(el);
     }
-    delete btn.dataset.raw;
-  }
-}
-
-// 一次性按钮 + 加载态：处理中重复点击直接忽略
-async function runBusy(btn, label, fn) {
-  if (btn && btn.dataset.busy === "1") return undefined;
-  if (btn) setBusy(btn, true, label);
-  try {
-    return await fn();
-  } finally {
-    if (btn) setBusy(btn, false);
   }
 }
 
@@ -223,7 +292,7 @@ function syncModalToViewport() {
   if (!openModal || !vv) return;
   openModal.style.top = vv.offsetTop + "px";
   openModal.style.height = vv.height + "px";
-  openModal.classList.toggle("modal-tight", vv.height <= 480);
+  openModal.classList.toggle("modal-tight", vv.height <= MODAL_TIGHT_H);
 }
 
 function ensureFocusVisible() {
@@ -246,7 +315,7 @@ if (vv) {
   vv.addEventListener("scroll", onViewportChange);
 }
 // 键盘可能在弹窗打开后才弹出：输入框获得焦点时再校正一次
-document.addEventListener("focusin", () => setTimeout(onViewportChange, 80));
+document.addEventListener("focusin", () => setTimeout(onViewportChange, FOCUS_CORRECT_DELAY));
 
 function setModalOpen(modal, open) {
   if (!modal) return;
@@ -274,7 +343,10 @@ if (open) {
 function askAdmin(reason, errText = "", hint = "") {
   return new Promise((resolve) => {
     const modal = $("#adminModal");
-    modal._prev = openModal && openModal !== modal ? openModal : null;
+    // 密码输错重试时会再次进入 askAdmin。此时 openModal 仍是 adminModal，
+    // 不能再把它自己当作「下面的弹窗」——否则会把第一次记下的 _prev 覆盖掉，
+    // 取消时就无法还原被压在下面的表单。
+    if (!modal._prev && openModal && openModal !== modal) modal._prev = openModal;
     $("#adminReason").textContent = reason;
     $("#adminHint").textContent = hint || "本口令的管理员密码";
     $("#adminMsg").textContent = errText;
@@ -386,6 +458,12 @@ async function doLogin() {
     $("#passcode").value = "";
     await afterLogin();
   } catch (e) {
+    // 已经拿到 token 但后续失败（接口异常等）时，别把半截的 token 留在本地，
+    // 否则刷新页面会带着它再失败一次、再 logout 一遍。
+    if (state.token && !state.projectId) {
+      state.token = "";
+      localStorage.removeItem("tb_token");
+    }
     $("#loginMsg").textContent = e.message;
   } finally {
     setBusy(btn, false);
@@ -459,6 +537,9 @@ function showHome() {
   state.projectStatus = "";
   closeNewProj();
   $("#homeMsg").textContent = "";
+  // 离开项目后停止轮询：回到项目时 showApp 会按需重建 timer
+  clearInterval(state.timer);
+  state.timer = null;
   renderProjects();
 }
 
@@ -631,6 +712,48 @@ function shopStatusCell(i) {
   return `<span class="pill static${done ? " done" : ""}" title="由「采购记录」自动同步：登记了采购就变已购，删掉那笔记录就回到待购">${esc(i.status)}</span>`;
 }
 
+// 接任务 / 取消接任务：拿服务器返回的结果就地更新缓存并重画。
+// 这样「行内状态（接单家庭标记 + 接任务/取消接任务 + 接单时间）」与 toast 提示在同一拍出现，
+// 不必再等末尾那次整页 render 重新取数 —— 否则提示会比界面早一整趟网络，按钮转圈也得跟着多转一趟。
+function applyClaimLocal(id, claim, claimedBy) {
+  const nowUtc = () => new Date().toISOString().slice(0, 19).replace("T", " "); // 与服务端 datetime('now') 同格式
+  const mine = Number(state.familyId) || null;
+  const patch = (list) => {
+    if (!Array.isArray(list)) return;
+    const it = list.find((x) => Number(x.id) === Number(id));
+    if (!it) return;
+    if (claim) {
+      it.claimed_family_id = mine;
+      it.claimed_family_name = claimedBy || familyName(mine);
+      it.claimed_at = nowUtc();
+    } else {
+      it.claimed_family_id = null;
+      it.claimed_family_name = "";
+      it.claimed_at = "";
+    }
+  };
+  // 采购清单页用 state.shoppingList；采购记录页的「物品名称候选」用的是同一批数据（state.shopItems），
+  // 两个缓存一起更新，切到采购记录时候选里就能立刻看到刚接下的项。
+  patch(state.shoppingList);
+  patch(state.shopItems);
+  if (state.tab === "shopping") {
+    paintShopping();
+    applyReadonly();
+    // 重画后把在途请求的加载态刷到新按钮上：否则旧按钮被替换，转圈会先断一下，
+    // 状态要等末尾 setBusy(false) 才恢复，看起来就是「动画提前结束、状态过一会儿才同步」。
+    reapplyInflight();
+  }
+}
+
+// 后台对账：不阻塞界面地重新取一次当前页签的数据（跳过 revalidate 里「刚刷过就别再刷」的防抖），
+// 用来跟上别人的改动。界面已经在上面按服务器返回更新过了，这里失败也不影响。
+function refreshCurrentTabSoon() {
+  const tab = state.tab;
+  if (!FETCHERS[tab]) return;
+  state.tabAt[tab] = 0;
+  revalidate(tab).catch(() => {});
+}
+
 function showPick() {
   show("pickView");
   const ro = isReadonly();
@@ -674,7 +797,9 @@ function renderChrome() {
   $("#tabs").innerHTML = TABS.map(
     (t) =>
       `<button class="tab${t.key === state.tab ? " active" : ""}" data-tab="${t.key}">${t.label}` +
-      (t.key === "logs" && state.newLogs ? `<span class="badge">${state.newLogs}</span>` : "") +
+      (t.key === "logs" && state.newLogs
+        ? `<span class="badge" aria-label="${state.newLogs} 条新日志">${state.newLogs}</span>`
+        : "") +
       `</button>`
   ).join("");
   $("#tabs")
@@ -688,6 +813,8 @@ function openTab(tab) {
   state.tab = tab;
   state.pending = null;
   if (tab === "logs") state.newLogs = 0;
+  // 离开采购记录页时把名称候选框收起，免得把「正开着」的状态带到下次切回来
+  if (tab !== "purchases") state.purSuggestOpen = false;
   renderChrome();
   if (paintTab(tab)) revalidate(tab);
   else render();
@@ -697,7 +824,7 @@ function showApp() {
   show("appView");
   renderChrome();
   const ready = render();
-  if (!state.timer) state.timer = setInterval(poll, 10000);
+  if (!state.timer) state.timer = setInterval(poll, POLL_MS);
   // 当前页签取数完成后再预热其余页签，避免与当前页签重复请求同一接口
   Promise.resolve(ready).then(prefetchRest).catch(() => {});
 }
@@ -765,7 +892,6 @@ async function render() {
     const tab = state.tab;
     const fn = FETCHERS[tab];
     if (!fn) return;
-    const snap = snapshotForm();
     try {
       await fn();
       state.tabReady[tab] = true;
@@ -778,11 +904,17 @@ async function render() {
       continue;
     }
     if (state.tab === tab) {
+      // 取数完成之后再快照：否则「请求开始前」拍下的空值会在请求返回后把
+      // 用户这期间刚选好的内容（例如采购记录里的物品名称）覆盖掉。
+      // 这里拍的是「取数后、重画前」的最新值，重画后原样填回。
+      const snap = snapshotForm();
       if (paintTab(tab)) restoreForm(snap);
       applyReadonly();
       return;
     }
   }
+  // 三轮里页签都在变、没能画出来：至少用缓存把当前页签补画一次，别让内容区空着
+  if (FETCHERS[state.tab] && !$("#content").firstChild) paintTab(state.tab);
 }
 
 // 用缓存把某个页签先画出来（切页签时先画缓存、网络回来再后台刷新）；没有缓存返回 false，交给整页渲染兜底
@@ -791,8 +923,11 @@ function paintTab(tab) {
   const paint = PAINTERS[tab];
   if (!paint) return false;
   try {
+    const keepSuggest = captureSuggestOpen(); // 用户正开着名称候选框时，重画不该把它关掉
     paint();
     applyReadonly();
+    restoreSuggestOpen(keepSuggest);
+    reapplyInflight(); // 重画后把在途请求的加载态刷回到新元素上
     return true;
   } catch {
     return false;
@@ -803,14 +938,18 @@ function paintTab(tab) {
 async function revalidate(tab) {
   if (!FETCHERS[tab]) return;
   if (state.revalidating[tab]) return; // 同一页签已在刷新，别叠加请求
-  if (state.tabAt[tab] && Date.now() - state.tabAt[tab] < 1000) return; // 刚刷新过，短时间内不再重复请求
+  if (state.tabAt[tab] && Date.now() - state.tabAt[tab] < REVALIDATE_MS) return; // 刚刷新过，短时间内不再重复请求
   state.revalidating[tab] = true;
   try {
-    const snap = state.tab === tab ? snapshotForm() : null;
     await FETCHERS[tab]();
     state.tabReady[tab] = true;
     state.tabAt[tab] = Date.now();
-    if (state.tab === tab && paintTab(tab)) restoreForm(snap);
+    if (state.tab === tab) {
+      // 快照放到取数之后：保留用户在这次后台刷新期间刚选好的内容，
+      // 避免用「请求开始前」的旧快照把它盖掉。
+      const snap = snapshotForm();
+      if (paintTab(tab)) restoreForm(snap);
+    }
   } catch {
     // 后台刷新失败：保持已画出的缓存内容
   } finally {
@@ -830,7 +969,8 @@ async function prefetchRest() {
       try {
         await FETCHERS[t]();
         state.tabReady[t] = true;
-        state.tabAt[t] = Date.now();
+        // 不写 state.tabAt[t]：让用户切到该页签时的 revalidate 正常跑一次，
+        // 避免「进入项目后 1 秒内切过去就不刷新」。
       } catch {}
     }
   } finally {
@@ -848,6 +988,7 @@ function applyReadonly() {
   if (!c.querySelector(".banner")) {
     const b = document.createElement("div");
     b.className = "banner";
+    b.setAttribute("role", "status");
     b.textContent = "项目已结束 · 当前为查看模式，内容不可修改；如需修改，请在项目中心用本口令的管理员密码重启项目";
     c.prepend(b);
   }
@@ -855,6 +996,7 @@ function applyReadonly() {
 
 // 定时轮询：同步别人的改动 + 拉取新日志
 async function poll() {
+  if (document.visibilityState === "hidden") return; // 页面在后台就不打扰后端
   if (!state.token || $("#appView").classList.contains("hidden")) return;
   try {
     const logs = (await api("/logs?since=" + state.lastLogId)).data || [];
@@ -893,6 +1035,7 @@ function updateBadge() {
     const span = document.createElement("span");
     span.className = "badge";
     span.textContent = state.newLogs;
+    span.setAttribute("aria-label", state.newLogs + " 条新日志");
     tab.appendChild(span);
   }
 }
@@ -972,14 +1115,14 @@ async function fetchOverview() {
   // 概览要用的三个接口互不依赖，并发拉取，别让网络延迟叠成三倍
   const [o, st, logs] = await Promise.all([api("/overview"), api("/settlement"), api("/logs?since=0")]);
   state.overview = o.data; // 缓存一份，供「修改预算 / 取消」局部重画时取用
-  state.settlement = st.data;
+  state.settlement = st.data || {}; // 后端返回 data: null 时给个空对象，paintOverview 里不解构就不会炸
   state.logsList = logs.data || [];
   state.lastLogId = state.logsList.length ? state.logsList[state.logsList.length - 1].id : 0;
 }
 
 function paintOverview() {
   const o = state.overview;
-  const st = state.settlement;
+  const st = state.settlement || {};
   const logs = state.logsList || [];
   const recent = logs.slice(-6).reverse();
   const hasBudget = Number(o.budget) > 0;
@@ -1015,8 +1158,11 @@ function paintCurrentTab() {
   const paint = map[state.tab];
   if (!paint) return false; // 当前页签没有对应画匠，就交给整页渲染兜底
   try {
+    const keepSuggest = captureSuggestOpen(); // 同上：局部重画也别把正开着的候选框关掉
     paint();
     applyReadonly();
+    restoreSuggestOpen(keepSuggest);
+    reapplyInflight(); // 同上
     return true;
   } catch {
     return false;
@@ -1173,7 +1319,7 @@ function paintShopping() {
         <input id="shop-unit" class="shrink" style="flex:0 0 70px" placeholder="单位" />
         <button class="ghost shrink" data-action="add-shop">添加</button>
       </div>
-      <p class="hint" style="margin:8px 0 0">点「接任务」即可认领某一项，别人就能看到是你家在负责；只有接单的家庭能取消。「待购 / 已购」由「采购记录」自动同步：登记了采购就变已购，删掉那笔记录就回到待购，并清空接单家庭、回到没人接任务。已经登记过采购记录的项（「已购」）不能从清单里删除，「删除」按钮会变成不可点；把对应的采购记录删掉后它回到「未接单 + 待购」，删除就恢复可用。</p>
+      <p class="hint" style="margin:8px 0 0"></p>
       <div style="margin-top:10px">
         ${items.length
           ? items
@@ -1245,6 +1391,14 @@ function setSuggestOpen(open) {
   input.setAttribute("aria-expanded", state.purSuggestOpen ? "true" : "false");
   if (toggle) toggle.setAttribute("aria-expanded", state.purSuggestOpen ? "true" : "false");
 }
+// 重画内容区（后台刷新、切页签后的补画、局部重画）都会重建 #content，采购记录页的名称候选框
+// 会被顺手收起。用户正开着候选框时先记下这个状态，重画完再展开，避免「刚点开就自己消失」。
+function captureSuggestOpen() {
+  return state.tab === "purchases" && !!state.purSuggestOpen;
+}
+function restoreSuggestOpen(keep) {
+  if (keep && state.tab === "purchases" && !state.purSuggestOpen) setSuggestOpen(true);
+}
 function moveSuggestActive(delta) {
   const opts = [...document.querySelectorAll('#pur-suggest li[role="option"]')];
   if (!opts.length) return;
@@ -1272,7 +1426,7 @@ $("#content").addEventListener("focusout", (e) => {
     const a = document.activeElement;
     if (a && (a.id === "pur-item" || (a.closest && a.closest("#pur-combo")))) return;
     setSuggestOpen(false);
-  }, 150);
+  }, FOCUSOUT_DELAY);
 });
 $("#content").addEventListener("mousedown", (e) => {
   // 候选项目不可获得焦点，按下时别让输入框失焦（否则会先收起来再点不到）
@@ -1309,13 +1463,16 @@ async function fetchPurchases() {
 // 只重画采购记录页内容（用缓存数据），供纯前端切换调用
 function paintPurchases() {
   const list = state.purchases || [];
-  const shopItems = state.shopItems || [];
   const ov = state.overview || {};
   const budget = Number(ov.budget) || 0;
   // 总花费按本页列出的采购明细就地汇总，保证与下方明细一致
   const spent = list.reduce((s, p) => s + (Number(p.amount) || 0), 0);
-  state.shopItems = shopItems;   // 供名称候选框过滤
-  state.purSuggestOpen = false;  // #content 会被重建成新 DOM，候选框回到收起状态
+  // 后台刷新 / 轮询会重建 #content，下拉面板的 DOM 会被销毁。
+  // 在重建前记住面板当前的开合状态，重建后恢复，避免用户正开着面板时被意外收起。
+  // （输入框里的值由 render/revalidate 的「取数后快照 + restoreForm」负责保留，不在这里处理。）
+  const suggestBox = $("#pur-suggest");
+  const suggestWasOpen = !!(suggestBox && !suggestBox.hidden);
+  state.purSuggestOpen = false;  // 先按收起处理；若之前确实开着，末尾会再打开
   state.purActive = -1;
   const perFamily = {};
   list.forEach((p) => (perFamily[p.family_id] = (perFamily[p.family_id] || 0) + (Number(p.amount) || 0)));
@@ -1334,7 +1491,7 @@ $("#content").innerHTML = `
         <input id="pur-amount" class="shrink" style="flex:0 0 90px" type="number" min="0" step="0.01" placeholder="金额" />
         <button class="ghost shrink" data-action="add-purchase">登记</button>
       </div>
-<p class="hint" style="margin:8px 0 0">只记当前家庭「${esc(familyName(state.familyId))}」已经接单、且还没登记过采购的项：点名称框右侧箭头（或点输入框）展开候选选一个，不能自己新增名称；登记后该项在清单里变成「已购」，也不再出现在候选里。</p>
+<p class="hint" style="margin:8px 0 0"></p>
     </div>
     <!-- 「各家采购金额」面板用普通面板底色（与上方「登记一笔采购」一致）；进度条与百分比仍按档位着色 -->
     <div class="section budget-summary">
@@ -1361,15 +1518,23 @@ $("#content").innerHTML = `
             .join("")
         : '<div class="empty">暂无采购记录</div>'}
     </div>`;
+  // DOM 已重建。若重建前候选面板是打开的，把它恢复到打开状态并重新填充候选项，
+  // 这样后台刷新 / 轮询不会把用户正在做的选择打断。
+  if (suggestWasOpen) {
+    state.purSuggestOpen = true;
+    setSuggestOpen(true);
+  }
 }
 
 // ---------- 结算 ----------
 async function fetchSettlement() {
-  state.settlement = (await api("/settlement")).data;
+  state.settlement = (await api("/settlement")).data || {};
 }
 
 function paintSettlement() {
-  const s = state.settlement;
+  const s = state.settlement || {};
+  const detail = s.detail || [];
+  const transfers = s.transfers || [];
   $("#content").innerHTML = `
 <div class="cards">
       <div class="card"><div class="num">${money(s.total)}</div><div class="lbl">总花费</div></div>
@@ -1380,7 +1545,7 @@ function paintSettlement() {
       <table>
         <thead><tr><th>家庭</th><th class="r">已垫付</th><th class="r">应摊</th><th class="r">差额</th></tr></thead>
         <tbody>
-          ${s.detail
+          ${detail
             .map(
               (d) => `<tr>
                 <td>${esc(d.name)}</td>
@@ -1396,8 +1561,8 @@ function paintSettlement() {
     </div>
     <div class="section">
       <div class="section-head"><span class="title">结算建议</span></div>
-      ${s.transfers.length
-        ? s.transfers
+      ${transfers.length
+        ? transfers
             .map((t) => `<div class="row"><div class="main"><span class="name">${esc(t.from)}</span> 应付给 <span class="name">${esc(t.to)}</span></div><span class="amt">${money(t.amount)}</span></div>`)
             .join("")
         : '<div class="empty">无需转账，账目已平</div>'}
@@ -1469,7 +1634,9 @@ $("#content").addEventListener("click", async (e) => {
         if (state.familyId && !state.families.some((f) => f.id === Number(state.familyId))) {
           state.familyId = null;
           localStorage.removeItem(familyKey(state.projectId));
-}
+        }
+        // 顶栏「当前：某家」与家庭下拉都在 renderChrome 里，删掉的若是当前家庭要跟着刷新
+        renderChrome();
       }
     } else if (action === "cancel-del") {
       // 收起行内「确认删除」：纯前端切换，只重画当前页签
@@ -1535,12 +1702,23 @@ clearFields("mem-name-" + fid, "mem-note-" + fid);
       clearFields("new-family-in-app");
       await loadFamilies();
     } else if (action === "add-carry") {
+      if (!state.familyId) return toast("请先选择你所属的家庭");
       const name = $("#carry-name").value.trim();
       if (!name) return toast("请输入物品名称");
       await api("/carry-items", { method: "POST", body: { name, quantity: $("#carry-qty").value.trim() } });
       clearFields("carry-name", "carry-qty");
     } else if (action === "toggle-carry") {
       await api("/carry-items/" + id, { method: "PUT", body: { status } });
+      // 就地更新缓存并重画：新状态与加载态在同一拍到位，不必等末尾整页 render 重新取数。
+      // 重画后由 reapplyInflight() 把转圈搬到新按钮上，避免「转圈先断一下、状态过一会才变」。
+      const it = (state.carryItems || []).find((x) => Number(x.id) === Number(id));
+      if (it) it.status = status;
+      if (state.tab === "carry") {
+        paintCarry();
+        applyReadonly();
+        reapplyInflight();
+      }
+      return; // 不走末尾那次整页 render
     } else if (action === "add-shop") {
       const name = $("#shop-name").value.trim();
       if (!name) return toast("请输入采购项名称");
@@ -1549,12 +1727,19 @@ clearFields("mem-name-" + fid, "mem-note-" + fid);
         body: { name, quantity: $("#shop-qty").value.trim(), unit: $("#shop-unit").value.trim() },
       });
       clearFields("shop-name", "shop-qty", "shop-unit");
-    } else if (action === "claim-shop") {
+} else if (action === "claim-shop") {
+      if (!state.familyId) return toast("请先选择你所属的家庭");
+      // 接任务 / 取消接任务不发 toast：行内状态（接单家庭标记 + 按钮）本身就是最直接的反馈
       const r = await api("/shopping-items/" + id, { method: "PUT", body: { claim: true } });
-      toast("已接下任务" + (r.claimed_by ? "：" + r.claimed_by : ""));
+      applyClaimLocal(id, true, r.claimed_by); // 就地按服务器返回更新并重画
+      refreshCurrentTabSoon();
+      return; // 不走末尾那次整页 render，行内状态即刻到位即可
     } else if (action === "unclaim-shop") {
+      if (!state.familyId) return toast("请先选择你所属的家庭");
       await api("/shopping-items/" + id, { method: "PUT", body: { claim: false } });
-      toast("已取消接任务");
+      applyClaimLocal(id, false);
+      refreshCurrentTabSoon();
+      return;
     } else if (action === "toggle-suggest") {
       // 收起时顺手把焦点移出输入框，免得 focusin 立刻又把它展开
       if (state.purSuggestOpen) {
@@ -1609,7 +1794,9 @@ clearFields("pur-item", "pur-amount");
       );
       if (!ok) return; // 取消操作：保持编辑态，输入内容不丢
       state.editingBudget = false;
-      await loadProjects();
+      // 预算已写成功：项目中心卡片里的数字下次进入时再刷新即可，
+      // 不把 loadProjects 的失败暴露成「预算保存失败」。
+      loadProjects().catch(() => {});
       toast(val > 0 ? "预算已更新为 " + money(val) : "已取消预算设置");
     }
     await render();
