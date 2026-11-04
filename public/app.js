@@ -7,7 +7,6 @@ const money = (n) => "¥" + (Math.round((Number(n) || 0) * 100) / 100).toFixed(2
 const splitNames = (s) => String(s || "").split(/[,，、;；/|\s]+/).map((x) => x.trim()).filter(Boolean);
 
 // 几个反复出现的时长集中在这里，避免散落在各处
-const POLL_MS = 10000;       // 轮询间隔
 const REVALIDATE_MS = 1000;  // 页签后台刷新的防抖窗口
 const MODAL_TIGHT_H = 480;   // 软键盘弹出后弹窗切「贴顶 + 内部滚动」的高度阈值
 const FOCUSOUT_DELAY = 150;  // 候选框 focusout 延迟收起
@@ -41,11 +40,10 @@ const state = {
   familyId: null,
   families: [],
   projects: [],
+  projectsAt: 0,        // 项目列表上次成功取数的时间戳：回到项目中心时据此判断要不要再刷一次
   tab: "overview",
 lastLogId: 0,
   newLogs: 0,
-  logsPending: false,   // 有日志到了但还没画到页面上（重绘被打断时留到下一轮补画，避免被吞掉）
-  timer: null,
   pending: null,        // 待确认删除：{ kind, id }
   editingMember: null,  // 正在编辑的成员 id
   editingFamily: null,  // 正在重命名的家庭 id
@@ -93,8 +91,9 @@ function applyTheme(t, persist) {
       localStorage.setItem(THEME_KEY, next);
     } catch (e) {}
   }
+  // 窄屏时侧边栏会铺成顶部条，所以地址栏配色要跟着主题走，避免「状态栏深、页面浅」的割裂色带。
   const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute("content", next === "dark" ? "#1c1c1c" : "#eeeeee");
+  if (meta) meta.setAttribute("content", next === "dark" ? "#111629" : "#e9edf8");
   // 按钮里是太阳 / 月亮线条图标，显示哪一个由 CSS 按 data-theme 决定；
   // 这里只更新可访问名称与悬停提示（图标本身 aria-hidden，不参与朗读）
   const label = next === "dark" ? "浅色" : "深色"; // 提示写「点下去会切到哪个主题」
@@ -287,27 +286,82 @@ function hardenSecretInputs() {
 //    偏移与高度，可视高度不足时切成贴顶 + 内部滚动，并把被挡住的输入框滚回可视区。
 const vv = window.visualViewport || null;
 let openModal = null;
+// 上一次写进 style 的几何值。软键盘弹起的那 200~300ms 里 resize 会连发几十次，
+// 每次都写一遍 top/height 等于逼着浏览器逐帧重排遮罩层；这里只在数值真的变了才写。
+let modalGeom = { top: null, height: null, left: null, width: null };
 
 function syncModalToViewport() {
   if (!openModal || !vv) return;
-  openModal.style.top = vv.offsetTop + "px";
-  openModal.style.height = vv.height + "px";
+  // 横向同理：手机上只要页面有横向溢出，布局视口就会比屏幕宽，而 position:fixed 的
+  // 参照是布局视口——遮罩跟着变宽，卡片右边直接被屏幕切掉。可视区比布局视口窄时，
+  // 就把遮罩收窄到可视区宽度并跟着左右偏移走；正常情况（含桌面带滚动条）不动它。
+  const layoutW = document.documentElement.clientWidth;
+  const narrow = !!(vv.width && layoutW && vv.width < layoutW - 1);
+  const next = {
+    top: Math.round(vv.offsetTop),
+    height: Math.round(vv.height),
+    left: narrow ? Math.round(vv.offsetLeft) : null,
+    width: narrow ? Math.round(vv.width) : null,
+  };
+
+  if (next.top !== modalGeom.top) openModal.style.top = next.top + "px";
+  if (next.height !== modalGeom.height) openModal.style.height = next.height + "px";
+  if (next.width === null) {
+    if (modalGeom.width !== null || modalGeom.left !== null) {
+      openModal.style.removeProperty("left");
+      openModal.style.removeProperty("width");
+      openModal.style.removeProperty("right");
+    }
+  } else if (next.left !== modalGeom.left || next.width !== modalGeom.width) {
+    openModal.style.left = next.left + "px";
+    openModal.style.width = next.width + "px";
+    openModal.style.right = "auto";
+  }
+  modalGeom = next;
   openModal.classList.toggle("modal-tight", vv.height <= MODAL_TIGHT_H);
 }
 
+// 把获得焦点的输入框滚进可视区。这里只在弹窗卡片内部滚，绝不调用 scrollIntoView：
+// scrollIntoView 会把页面文档一起滚，而文档一滚 visualViewport 的 offsetTop 就变、
+// 弹窗跟着上下挪，输入框又落到可视区外——来回抖动，手机上的表现就是「背景乱闪」。
 function ensureFocusVisible() {
   if (!openModal || !vv) return;
   const el = document.activeElement;
   if (!el || !openModal.contains(el)) return;
+  const card = el.closest(".modal-card") || openModal;
   const box = el.getBoundingClientRect();
-  const top = vv.offsetTop;
-  const bottom = vv.offsetTop + vv.height;
-  if (box.top < top + 8 || box.bottom > bottom - 12) el.scrollIntoView({ block: "center" });
+  const cbox = card.getBoundingClientRect();
+  const pad = 12;
+
+  // 手机端底部按钮条是 sticky 吸底的，会盖住内容，得把它占的高度让出来
+  let bottomEdge = cbox.bottom - pad;
+  const acts = card.querySelector(".modal-actions");
+  if (acts && getComputedStyle(acts).position === "sticky") {
+    const abox = acts.getBoundingClientRect();
+    if (abox.height && abox.top > cbox.top && abox.top < bottomEdge) bottomEdge = Math.min(bottomEdge, abox.top - 8);
+  }
+
+  if (box.bottom > bottomEdge) card.scrollTop += box.bottom - bottomEdge;
+  else if (box.top < cbox.top + pad) card.scrollTop += box.top - (cbox.top + pad);
 }
 
+// 视口的 resize / scroll 事件合并到一帧里处理，避免连发事件引发的抖动
+let vvRaf = 0;
 function onViewportChange() {
+  if (vvRaf) return;
+  vvRaf = requestAnimationFrame(() => {
+    vvRaf = 0;
+    syncModalToViewport();
+    ensureFocusVisible();
+  });
+}
+// 打开弹窗时先同步一次几何（不能等下一帧，否则会先按整屏居中画一帧再跳）
+function syncNow() {
+  if (vvRaf) {
+    cancelAnimationFrame(vvRaf);
+    vvRaf = 0;
+  }
   syncModalToViewport();
-  ensureFocusVisible();
 }
 
 if (vv) {
@@ -320,18 +374,28 @@ document.addEventListener("focusin", () => setTimeout(onViewportChange, FOCUS_CO
 function setModalOpen(modal, open) {
   if (!modal) return;
 if (open) {
-    // 管理权限密码弹窗允许叠在其它弹窗之上（如「新建项目」表单），不把下面那个关掉
-    if (openModal && openModal !== modal && modal !== $("#adminModal")) setModalOpen(openModal, false);
+    // 同一时刻只显示一个弹窗：手机上两张卡片上下叠着，后面那张会被两层遮罩压得发灰，
+    // 看起来就像「弹窗显示异常」。这里先藏起下面那个（只是加 .hidden，DOM 与输入内容都保留），
+    // askAdmin 里记了 _prev，验证结束 / 取消后会原样还原。
+    if (openModal && openModal !== modal) setModalOpen(openModal, false);
     openModal = modal;
+    modalGeom = { top: null, height: null, left: null, width: null };
     modal.classList.remove("hidden");
-    syncModalToViewport();
+    syncNow();
+    // 打开期间给根节点挂标记：CSS 用它冻结背景图层的动画、锁住页面滚动（见 style.css）
+    document.documentElement.classList.add("modal-open");
     setTimeout(onViewportChange, 300); // 键盘弹起有过渡动画，稍后再校正
   } else {
     modal.classList.add("hidden");
     modal.style.removeProperty("top");
     modal.style.removeProperty("height");
+    modal.style.removeProperty("left");
+    modal.style.removeProperty("width");
+    modal.style.removeProperty("right");
     modal.classList.remove("modal-tight");
     if (openModal === modal) openModal = null;
+    modalGeom = { top: null, height: null, left: null, width: null };
+    document.documentElement.classList.toggle("modal-open", !!openModal);
   }
 }
 
@@ -485,8 +549,6 @@ function logout() {
   state.familyId = null;
   localStorage.removeItem("tb_token");
   localStorage.removeItem("tb_project");
-  clearInterval(state.timer);
-  state.timer = null;
   state.lastLogId = 0;
   state.newLogs = 0;
   state.pending = null;
@@ -505,6 +567,7 @@ function logout() {
 // ---------- 项目中心 ----------
 async function loadProjects() {
   state.projects = (await api("/projects", { withProject: false })).data || [];
+  state.projectsAt = Date.now();
 }
 
 function renderFamRow() {
@@ -515,6 +578,17 @@ function renderFamRow() {
     `<input class="fam-members" placeholder="成员姓名，用逗号分隔（可留空）" />` +
     `<button class="link" data-action="del-fam-row">移除</button>`;
   return div;
+}
+
+// 新建项目弹窗里「移除」一行：只剩最后一行时清空输入而不是删掉，始终保留一行可填。
+// 弹窗 #newProjModal 在 #homeView 之外，点击事件由弹窗自己的委托处理（见文件末尾），
+// 抽成公共函数避免「添加一行 / 移除」两处逻辑分叉。
+function removeFamRow(btn) {
+  const row = btn.closest(".fam-row");
+  if (!row) return;
+  const rows = $("#famRows");
+  if (rows.children.length > 1) row.remove();
+  else row.querySelectorAll("input").forEach((i) => (i.value = ""));
 }
 
 // 新建项目弹窗
@@ -537,9 +611,21 @@ function showHome() {
   state.projectStatus = "";
   closeNewProj();
   $("#homeMsg").textContent = "";
-  // 离开项目后停止轮询：回到项目时 showApp 会按需重建 timer
-  clearInterval(state.timer);
-  state.timer = null;
+  renderProjects(); // 先用缓存出画面，不白屏
+  refreshProjectsOnHome(); // 再补一次最新数据：进项目里登记采购、加人之后，卡片上的花费/人数会变
+}
+
+// 回到项目中心时重新拉一次项目列表。卡片上的「已花费」「家庭数」「成员数」都是后端汇总的，
+// 只在登录、增删改项目时刷新过缓存的话，从项目里退回来看到的还是旧数字（重新登录才会变）。
+// 失败就保持缓存内容，不打扰用户；期间若已经点进某个项目，则不再重绘，免得盖掉新页面。
+async function refreshProjectsOnHome() {
+  if (Date.now() - (state.projectsAt || 0) < 1500) return; // 刚拉过一次（登录、改名、删除后）就别重复请求
+  try {
+    await loadProjects();
+  } catch {
+    return;
+  }
+  if ($("#homeView").classList.contains("hidden")) return;
   renderProjects();
 }
 
@@ -557,8 +643,8 @@ function renderProjects() {
           <input id="proj-edit-name-${p.id}" value="${esc(p.name)}" />
         </div>
         <div class="actions">
-          <button class="ghost shrink" data-action="save-project" data-id="${p.id}">保存</button>
-          <button class="link" data-action="cancel-project-edit">取消</button>
+          <button class="primary shrink" data-action="save-project" data-id="${p.id}">保存</button>
+          <button class="ghost shrink" data-action="cancel-project-edit">取消</button>
         </div>
       </div>`;
     }
@@ -578,7 +664,7 @@ function renderProjects() {
   });
   // 末尾始终保留一张「+」卡片：没有项目时它就是那张中间带加号的空卡片
   cards.push(`<button class="proj-add" data-action="new-project">
-      <span class="plus">+</span>
+      <span class="plus" aria-hidden="true"></span>
       <span>新建团建项目</span>
       ${list.length ? "" : '<span class="hint2">还没有项目，点这里新建一个</span>'}
     </button>`);
@@ -824,14 +910,20 @@ function showApp() {
   show("appView");
   renderChrome();
   const ready = render();
-  if (!state.timer) state.timer = setInterval(poll, POLL_MS);
-  // 当前页签取数完成后再预热其余页签，避免与当前页签重复请求同一接口
+  // 不再做 10 秒轮询：数据只在切页签、主动操作、以及从后台切回前台时刷新
   Promise.resolve(ready).then(prefetchRest).catch(() => {});
 }
 
+// 从别的标签页 / 后台切回时补一次刷新，替代原来的定时轮询
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  if (!state.token || $("#appView").classList.contains("hidden")) return;
+  revalidate(state.tab);
+});
+
 // ---------- 表单状态快照 ----------
-// 定时同步会整体重建 #content，重建前先记住每个输入框里的值，重建后原样填回，
-// 避免手机端正在填写的内容被同步刷新清空。
+// 页签后台刷新会整体重建 #content，重建前先记住每个输入框里的值，重建后原样填回，
+// 避免正在填写的内容被刷新清空。
 function snapshotForm() {
   const c = $("#content");
   if (!c) return null;
@@ -994,38 +1086,6 @@ function applyReadonly() {
   }
 }
 
-// 定时轮询：同步别人的改动 + 拉取新日志
-async function poll() {
-  if (document.visibilityState === "hidden") return; // 页面在后台就不打扰后端
-  if (!state.token || $("#appView").classList.contains("hidden")) return;
-  try {
-    const logs = (await api("/logs?since=" + state.lastLogId)).data || [];
-    if (logs.length) {
-      state.lastLogId = logs[logs.length - 1].id;
-      // 记下「还有日志没画到页面上」：万一这一轮因为正在输入而没有重绘，
-      // 下一次轮询还会把它们补画出来。不能只靠 lastLogId——它已经推进了，这几条再也拉不到，会被吞掉。
-      state.logsPending = true;
-      // 日志页本身就在展示最新数据，直接重绘；其他页只加角标
-      if (state.tab !== "logs") {
-        state.newLogs += logs.length;
-        updateBadge();
-      }
-    }
-  } catch {}
-  if (!state.logsPending) return; // 没有待画的新数据就绝不重建页面
-  // 只有「输入控件里已经填了内容」才不打断，免得把没提交的输入清空；
-  // 仅仅聚焦、还没填内容的情况（例如刚点开预算输入框）不算，照常刷新。
-  const ae = document.activeElement;
-  const hasTyped =
-    ae &&
-    $("#content").contains(ae) &&
-    /INPUT|SELECT|TEXTAREA/.test(ae.tagName) &&
-    String(ae.type === "checkbox" || ae.type === "radio" ? "" : ae.value || "").length > 0;
-  if (hasTyped) return;
-  state.logsPending = false;
-  render();
-}
-
 function updateBadge() {
   const tab = $("#tabs").querySelector('[data-tab="logs"]');
   if (!tab) return;
@@ -1088,8 +1148,8 @@ function budgetPanelHtml(o) {
         state.editingBudget
           ? `<div class="form-row">
                <input id="budget-input" type="number" min="0" step="0.01" inputmode="decimal" placeholder="预算金额（元）" value="${hasBudget ? o.budget : ""}" />
-               <button class="ghost shrink" data-action="save-budget">保存</button>
-               <button class="link" data-action="cancel-budget">取消</button>
+               <button class="primary shrink" data-action="save-budget">保存</button>
+               <button class="ghost shrink" data-action="cancel-budget">取消</button>
              </div>
              <p class="hint" style="margin:8px 0 0">填 0 可取消预算设置；设置 / 修改预算需要本口令的管理员密码。</p>`
           : budgetProgressHtml(o.total_amount, o.budget)
@@ -1112,19 +1172,25 @@ function renderBudgetPanel({ focusInput = false } = {}) {
 
 // ---------- 概览 ----------
 async function fetchOverview() {
-  // 概览要用的三个接口互不依赖，并发拉取，别让网络延迟叠成三倍
-  const [o, st, logs] = await Promise.all([api("/overview"), api("/settlement"), api("/logs?since=0")]);
+  // 概览要用的四个接口互不依赖，并发拉取，别让网络延迟叠成四倍
+  const [o, st, logs, shop] = await Promise.all([
+    api("/overview"),
+    api("/settlement"),
+    api("/logs?since=0"), // 日志页与顶栏角标仍要这份增量游标，概览自己不再展示
+    api("/shopping-items"), // 任务接单图表按「哪家接了、买到没有」统计
+  ]);
   state.overview = o.data; // 缓存一份，供「修改预算 / 取消」局部重画时取用
   state.settlement = st.data || {}; // 后端返回 data: null 时给个空对象，paintOverview 里不解构就不会炸
   state.logsList = logs.data || [];
   state.lastLogId = state.logsList.length ? state.logsList[state.logsList.length - 1].id : 0;
+  // 与采购清单页共用一份数据：两个缓存一起更新，切页签时接单状态立刻可见（同 claimShopping 里的约定）
+  state.shoppingList = shop.data || [];
+  state.shopItems = state.shoppingList;
 }
 
 function paintOverview() {
   const o = state.overview;
   const st = state.settlement || {};
-  const logs = state.logsList || [];
-  const recent = logs.slice(-6).reverse();
   const hasBudget = Number(o.budget) > 0;
   $("#content").innerHTML = `
     <div class="cards">
@@ -1136,10 +1202,86 @@ function paintOverview() {
       <div class="card"><div class="num">${o.carry_done}/${o.carry_total}</div><div class="lbl">携带已带</div></div>
       <div class="card"><div class="num">${o.shopping_done}/${o.shopping_total}</div><div class="lbl">采购已购</div></div>
     </div>
-    <div class="section budget-summary" id="budgetPanel">${budgetPanelHtml(o)}</div>
-    <h3>最近操作</h3>
-    <div class="logs">${recent.length ? recent.map(logHtml).join("") : '<div class="empty">暂无记录</div>'}</div>
+    <div class="section budget-summary budget-panel" id="budgetPanel">${budgetPanelHtml(o)}</div>
+    ${taskPanelHtml()}
   `;
+}
+
+// 概览页「任务接单情况」面板：每家一行的横向分段条形图。
+// 绿色段 = 已接且已购，紫色段 = 已接但还没买（待购）；条长按接单最多的家庭归一化，
+// 未接单的物品不计入任何一家，只在标题右侧的汇总里以「待接」出现。
+function taskPanelHtml() {
+  const items = state.shoppingList || [];
+  const fams = state.families || [];
+
+  // 家列表 = 现有家庭，再并上清单里仍挂着、但家可能已被删掉的接单方（保留历史数据不断档）
+  const rows = fams.map((f) => ({ id: f.id, name: f.name }));
+  const known = new Set(rows.map((r) => r.id));
+  for (const it of items) {
+    if (it.claimed_family_id && !known.has(it.claimed_family_id)) {
+      known.add(it.claimed_family_id);
+      rows.push({ id: it.claimed_family_id, name: it.claimed_family_name || "已移除的家庭" });
+    }
+  }
+
+  const stats = rows
+    .map((r) => {
+      const mine = items.filter((it) => it.claimed_family_id === r.id);
+      const done = mine.filter((it) => it.status === "已购").length;
+      return { name: r.name, done, wait: mine.length - done, total: mine.length };
+    })
+    .sort((a, b) => b.total - a.total || b.done - a.done); // 接得多的排前面；同量时已完成多的靠前
+
+  const unclaimed = items.filter((it) => !it.claimed_family_id).length;
+  const claimed = items.length - unclaimed;
+  const max = Math.max(1, ...stats.map((s) => s.total)); // 条宽归一化基准，全 0 时用 1 防除零
+
+  const body = !items.length
+    ? '<div class="empty">采购清单还没有物品，到「采购清单」页添加后这里就能看到各家的接单情况</div>'
+    : stats.length
+      ? stats.map((s) => taskRowHtml(s, max)).join("")
+      : '<div class="empty">还没有家庭，到「成员」页新增家庭后才能接单</div>';
+
+  return `
+    <div class="section task-panel">
+      <div class="section-head">
+        <span class="title">任务接单情况</span>
+        <span class="hint">${items.length ? `${unclaimed} 项待接 · ${claimed} 项已接单` : ""}</span>
+      </div>
+      ${body}
+      ${stats.length && items.length ? `<div class="task-legend"><span class="task-dot done"></span>已购<span class="task-dot wait"></span>已接待购</div>` : ""}
+    </div>
+  `;
+}
+
+// 单行：家名 + 分段条 + 数字，附带一个自定义气泡（原生 title 没法做样式，也撑不下两行明细）。
+// tip 用 aria-hidden 藏起来、行上给 aria-label，读屏不会念两遍。
+function taskRowHtml(s, max) {
+  const segs = s.total
+    ? `<span class="task-seg done" style="width:${((s.done / max) * 100).toFixed(2)}%"></span><span class="task-seg wait" style="width:${((s.wait / max) * 100).toFixed(2)}%"></span>`
+    : "";
+  const label = s.total
+    ? `${s.name}：已接 ${s.total} 项，已购 ${s.done} 项，待购 ${s.wait} 项`
+    : `${s.name}：还没接单`;
+  const tip = `
+        <div class="task-tip" aria-hidden="true">
+          <div class="task-tip-head"><span class="task-tip-name">${esc(s.name)}</span>${
+            s.total ? `<span class="task-tip-sum">已接 ${s.total} 项</span>` : ""
+          }</div>
+          ${
+            s.total
+              ? `<div class="task-tip-line"><span class="task-dot done"></span>已购<b>${s.done}</b>项</div>
+                 <div class="task-tip-line"><span class="task-dot wait"></span>待购<b>${s.wait}</b>项</div>`
+              : `<div class="task-tip-none">还没接单</div>`
+          }
+        </div>`;
+  return `
+      <div class="task-row" tabindex="0" aria-label="${esc(label)}">
+        <span class="task-fam">${esc(s.name)}</span>
+        <div class="task-track">${segs}</div>
+        <span class="task-count">${s.total}</span>
+        ${tip}
+      </div>`;
 }
 
 function logHtml(l, deletable = false) {
@@ -1190,8 +1332,8 @@ function paintMembers() {
           ? `<div class="section-head">
                <input id="fam-edit-name-${f.id}" value="${esc(f.name)}" style="max-width:220px" />
                <span>
-                 <button class="ghost shrink" data-action="save-family" data-id="${f.id}">保存</button>
-                 <button class="link" data-action="cancel-family-edit">取消</button>
+                 <button class="primary shrink" data-action="save-family" data-id="${f.id}">保存</button>
+                 <button class="ghost shrink" data-action="cancel-family-edit">取消</button>
                </span>
              </div>`
           : `<div class="section-head">
@@ -1209,8 +1351,8 @@ function paintMembers() {
                 <input id="mem-edit-name-${m.id}" value="${esc(m.name)}" placeholder="姓名" style="max-width:180px" />
                 <input id="mem-edit-note-${m.id}" value="${esc(m.note)}" placeholder="备注（忌口/过敏）" style="max-width:240px" />
               </div>
-              <button class="ghost shrink" data-action="save-member" data-id="${m.id}">保存</button>
-              <button class="link" data-action="cancel-member-edit">取消</button>
+              <button class="primary shrink" data-action="save-member" data-id="${m.id}">保存</button>
+              <button class="ghost shrink" data-action="cancel-member-edit">取消</button>
             </div>`;
           }
           return `<div class="row">
@@ -1390,6 +1532,11 @@ function setSuggestOpen(open) {
   box.hidden = !state.purSuggestOpen;
   input.setAttribute("aria-expanded", state.purSuggestOpen ? "true" : "false");
   if (toggle) toggle.setAttribute("aria-expanded", state.purSuggestOpen ? "true" : "false");
+  // 卡片上的 isolation 把下拉面板关在了自己的层叠上下文里，下面那张「各家采购金额」会盖住它。
+  // 展开时给所在卡片打个标记抬到最上层（CSS: .section.has-open-menu），收起时摘掉。
+  const host = $("#pur-combo");
+  const hostSec = host && host.closest(".section");
+  if (hostSec) hostSec.classList.toggle("has-open-menu", state.purSuggestOpen);
 }
 // 重画内容区（后台刷新、切页签后的补画、局部重画）都会重建 #content，采购记录页的名称候选框
 // 会被顺手收起。用户正开着候选框时先记下这个状态，重画完再展开，避免「刚点开就自己消失」。
@@ -1432,6 +1579,38 @@ $("#content").addEventListener("mousedown", (e) => {
   // 候选项目不可获得焦点，按下时别让输入框失焦（否则会先收起来再点不到）
   if (e.target.closest && e.target.closest('#pur-suggest li[role="option"]')) e.preventDefault();
 });
+
+// 接单明细气泡跟随指针：横向贴着鼠标，小箭头永远指向鼠标所在的 x。
+// 气泡先按「鼠标 - 半个箭头」摆位，再在面板内左右各夹 8px；箭头再在气泡内部夹一次，
+// 所以靠到两端时气泡会拐回来、箭头依然指着鼠标，不会戳出面板外。
+$("#content").addEventListener("pointermove", (e) => {
+  const row = e.target.closest && e.target.closest(".task-row");
+  if (!row) return;
+  const tip = row.querySelector(".task-tip");
+  if (tip) placeTaskTip(row, tip, e.clientX);
+});
+// 触摸端没有 hover：点按抬起前先把气泡对到手指位置（focus-within 负责显示）
+$("#content").addEventListener("pointerdown", (e) => {
+  const row = e.target.closest && e.target.closest(".task-row");
+  if (!row) return;
+  const tip = row.querySelector(".task-tip");
+  if (tip) placeTaskTip(row, tip, e.clientX);
+});
+
+function placeTaskTip(row, tip, clientX) {
+  const box = row.getBoundingClientRect();
+  const x = clientX - box.left; // 指针相对行左边缘的距离
+  // 气泡宽度只在内容生成后量一次；同一次渲染里内容不变，避免每次移动都触发布局计算
+  if (!tip.dataset.w) tip.dataset.w = String(tip.offsetWidth || 134);
+  const w = Number(tip.dataset.w) || 134;
+  const pad = 6;
+  const left = Math.min(Math.max(x - 18, pad), Math.max(pad, box.width - w - pad));
+  tip.style.left = left + "px";
+  // 箭头夹在圆角半径（13px）以内：再靠边就会从圆角外侧露出小方块的毛边
+  const arrow = Math.min(Math.max(x - left, 13), Math.max(13, w - 13));
+  tip.style.setProperty("--ax", arrow + "px");
+}
+
 $("#content").addEventListener("keydown", (e) => {
   if (e.target.id !== "pur-item") return;
   if (e.key === "ArrowDown") {
@@ -1476,9 +1655,13 @@ function paintPurchases() {
   state.purActive = -1;
   const perFamily = {};
   list.forEach((p) => (perFamily[p.family_id] = (perFamily[p.family_id] || 0) + (Number(p.amount) || 0)));
-  const summary = state.families
-    .map((f) => `<span class="tag" style="margin-right:6px">${esc(f.name)} ${money(perFamily[f.id] || 0)}</span>`)
-    .join("");
+  // 家庭金额标签改用 flex 容器排布：行内 span 靠 margin-right 拼接时，换行后的行距只有
+  // 父级 line-height，手机端两行会贴在一起；flex 的 row-gap 才能给「陈家 / 赵家」之间留出稳定间距。
+  const summary = state.families.length
+    ? `<div class="fam-summary">${state.families
+        .map((f) => `<span class="tag">${esc(f.name)} ${money(perFamily[f.id] || 0)}</span>`)
+        .join("")}</div>`
+    : '<span class="hint">还没有家庭</span>';
 $("#content").innerHTML = `
     <div class="section">
       <div class="section-head"><span class="title">登记一笔采购</span></div>
@@ -1497,7 +1680,7 @@ $("#content").innerHTML = `
     <div class="section budget-summary">
       <div class="section-head"><span class="title">各家采购金额</span></div>
       ${budgetProgressHtml(spent, budget)}
-      <div style="margin-top:10px">${summary || '<span class="hint">还没有家庭</span>'}</div>
+      <div style="margin-top:10px">${summary}</div>
     </div>
     <div class="section">
       <div class="section-head"><span class="title">采购明细</span><span class="hint">${list.length} 笔</span></div>
@@ -1816,13 +1999,6 @@ $("#homeView").addEventListener("click", async (e) => {
   const busyLabel = BUSY_ACTIONS[action];
   if (busyLabel) setBusy(btn, true, busyLabel);
   try {
-    if (action === "del-fam-row") {
-      const row = btn.closest(".fam-row");
-      const rows = $("#famRows");
-      if (rows.children.length > 1) row.remove();
-      else row.querySelectorAll("input").forEach((i) => (i.value = ""));
-      return;
-    }
     if (action === "new-project") {
       openNewProj();
       return;
@@ -1879,6 +2055,19 @@ if (action === "save-project") {
       if (!newName) return toast("请输入项目名称");
       const target = state.projects.find((x) => x.id === Number(id));
       const oldName = target ? target.name : "该项目";
+      // 原名保存：没有任何变化，不该让用户再走一遍管理口令。直接退出编辑态并提示。
+      if (target && newName === target.name) {
+        state.editingProject = null;
+        renderProjects();
+        return toast("项目名称没有改动");
+      }
+      // 同名检查：已有别的项目用了这个名字就提示换一个，避免列表里出现两张分不清的卡片
+      // （忽略大小写与首尾空格，纯大小写差异同样会让人混淆）
+      const lower = newName.toLowerCase();
+      const dup = state.projects.find(
+        (x) => x.id !== Number(id) && String(x.name || "").trim().toLowerCase() === lower
+      );
+      if (dup) return toast(`已存在同名项目「${dup.name}」，请换一个名称`);
       // 项目改名需要管理权限密码
       const ok = await withAdmin(`把项目「${oldName}」改名为「${newName}」`, async (pw) => {
         await api("/projects/" + id, { method: "PUT", body: { name: newName }, withProject: false, adminPw: pw });
@@ -1906,7 +2095,10 @@ $("#addFamRowBtn").addEventListener("click", () => $("#famRows").appendChild(ren
 $("#createProjBtn").addEventListener("click", createProject);
 $("#cancelProjBtn").addEventListener("click", closeNewProj);
 $("#newProjModal").addEventListener("click", (e) => {
-  if (e.target === $("#newProjModal")) closeNewProj();
+  if (e.target === $("#newProjModal")) return closeNewProj(); // 点遮罩关闭
+  // 「移除」按钮在这个弹窗里，而 #homeView 的委托收不到弹窗内的点击，故在此单独处理
+  const btn = e.target.closest('[data-action="del-fam-row"]');
+  if (btn) removeFamRow(btn);
 });
 $("#logoutBtn").addEventListener("click", logout);
 $("#logoutBtn2").addEventListener("click", logout);
@@ -1986,8 +2178,8 @@ function renderPcList() {
           <input id="pc-edit-pw-${r.id}" value="${esc(r.passcode)}" placeholder="口令" />
           <input id="pc-edit-adminpw-${r.id}" value="${esc(r.admin_passcode)}" placeholder="管理员密码" />
           <input id="pc-edit-name-${r.id}" value="${esc(r.name)}" placeholder="备注名（可选）" />
-          <button class="ghost shrink" data-pc-action="save" data-id="${r.id}">保存</button>
-          <button class="link" data-pc-action="cancel">取消</button>
+          <button class="primary shrink" data-pc-action="save" data-id="${r.id}">保存</button>
+          <button class="ghost shrink" data-pc-action="cancel">取消</button>
         </div>`;
       }
       const del =
