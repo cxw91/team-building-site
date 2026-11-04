@@ -1,5 +1,8 @@
 # 复制为 .dev.vars 后填写本地开发口令（Cloudflare Pages Functions 本地密钥文件）
 # PASSCODE：全队共用口令，用于登录
 PASSCODE = "team2026"
-# ADMIN_PASSCODE：管理权限密码，仅用于删除日志 / 删除项目 / 重启已结束的项目（部署到线上时务必换掉）
+# ADMIN_PASSCODE：项目级高风险操作的默认管理员密码；仅在新增口令时给「管理员密码」做初始值
+#                （已有口令的管理员密码存在数据库 passcodes.admin_passcode，按口令各自独立）
 ADMIN_PASSCODE = "admin2026"
+# SUPER_PASSCODE：超级密码，只用于登录页的「管理口令」（列出 / 新增 / 修改 / 删除口令）；未配置时该功能停用
+SUPER_PASSCODE = "super2026"

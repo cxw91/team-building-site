@@ -222,6 +222,25 @@ button:active { transform: translateY(1px); }
 .msg { color: var(--danger-text); min-height: 20px; font-size: 13px; margin: 10px 0 0; }
 
 .pick-list { display: flex; flex-wrap: wrap; gap: 10px; }
+
+/* ---------- 登录页：管理口令（入口在卡片右侧；列表与增删改在弹窗里） ---------- */
+.pc-open-row { display: flex; justify-content: flex-end; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.pc-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.pc-row {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--card-2);
+}
+.pc-row > input { flex: 1 1 130px; min-width: 0; }
+/* 列表项：四个字段按「标签：取值」对齐展示 —— 标签右对齐成固定一列，取值都从同一起点开始 */
+.pc-fields {
+  flex: 1 1 auto; min-width: 0;
+  display: grid; grid-template-columns: max-content minmax(0, 1fr);
+  column-gap: 6px; row-gap: 2px;
+}
+.pc-label { color: var(--muted); text-align: right; white-space: nowrap; }
+.pc-val { color: var(--text); overflow-wrap: anywhere; }
+.pc-pw { font-family: ui-monospace, Menlo, Consolas, monospace; }
+.pc-ops { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; }
 .pick {
   flex: 1 1 45%;
   padding: 14px;

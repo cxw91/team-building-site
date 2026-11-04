@@ -9,6 +9,25 @@
 --   ALTER TABLE shopping_items ADD COLUMN claimed_at TEXT NOT NULL DEFAULT '';
 -- 从「接任务版」升级到「预算版」（新增项目预算字段）：同样不必重建，执行以下一行即可：
 --   ALTER TABLE projects ADD COLUMN budget REAL NOT NULL DEFAULT 0;
+-- 从「预算版」升级到「多口令版」（新增口令表与项目归属字段，用于按口令隔离项目数据）：
+--   后端首次运行会自动补建下表与字段（见 functions/api/[[path]].js 的 ensureSchema），
+--   若想在库里显式留痕，可执行以下三行：
+--   CREATE TABLE IF NOT EXISTS passcodes (id INTEGER PRIMARY KEY AUTOINCREMENT, passcode TEXT NOT NULL UNIQUE, name TEXT NOT NULL DEFAULT '', admin_passcode TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')));
+--   ALTER TABLE projects ADD COLUMN passcode_id INTEGER;
+--   UPDATE projects SET passcode_id = (SELECT MIN(id) FROM passcodes) WHERE passcode_id IS NULL;
+-- 「按口令的管理员密码版」升级（passcodes 增加 admin_passcode）：同样可依赖后端 ensureSchema 自动补建并初始化，或执行：
+--   ALTER TABLE passcodes ADD COLUMN admin_passcode TEXT NOT NULL DEFAULT '';
+--   然后由后端把空值初始化为当前 ADMIN_PASSCODE（也可以手动 UPDATE 指定各口令自己的密码）。
+
+-- 口令（租户）：一个口令对应一份独立的项目数据；登录某口令只能看到它名下的项目。
+-- 口令的新增 / 修改 / 删除需要管理权限密码（ADMIN_PASSCODE），在登录页即可操作。
+CREATE TABLE IF NOT EXISTS passcodes (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  passcode       TEXT NOT NULL UNIQUE,             -- 登录口令（明文比对）
+  name           TEXT NOT NULL DEFAULT '',         -- 备注名
+  admin_passcode TEXT NOT NULL DEFAULT '',         -- 本口令的管理员密码：同一口令下的项目共用它
+  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+);
 
 -- 团建项目（顶层容器）
 CREATE TABLE IF NOT EXISTS projects (
@@ -17,6 +36,7 @@ CREATE TABLE IF NOT EXISTS projects (
   note       TEXT NOT NULL DEFAULT '',             -- 备注：日期 / 地点 / 说明
 status     TEXT NOT NULL DEFAULT '进行中',        -- 进行中 / 已结束
   budget     REAL NOT NULL DEFAULT 0,              -- 项目预算（元）；0 表示未设置（页面显示「无」）
+  passcode_id INTEGER,                             -- 归属口令（passcodes.id）：不同口令之间项目互相不可见
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -93,6 +113,7 @@ CREATE TABLE IF NOT EXISTS logs (
   created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE INDEX IF NOT EXISTS idx_projects_passcode ON projects(passcode_id);
 CREATE INDEX IF NOT EXISTS idx_families_project  ON families(project_id);
 CREATE INDEX IF NOT EXISTS idx_members_project   ON members(project_id);
 CREATE INDEX IF NOT EXISTS idx_members_family    ON members(family_id);

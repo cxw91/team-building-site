@@ -50,9 +50,14 @@ editingProject: null, // 正在改名的项目 id
   carryItems: [],       // 携带物品页缓存（同上）
   shoppingList: [],     // 采购清单页缓存（同上）
   purchases: [],        // 采购记录页缓存（同上）
-  shopItems: [],        // 采购清单里的物品，供「登记一笔采购」的名称候选框使用
+shopItems: [],        // 采购清单里的物品，供「登记一笔采购」的名称候选框使用
   purSuggestOpen: false,// 名称候选框是否展开
   purActive: -1,        // 候选框里键盘高亮到第几项
+  settlement: null,     // 结算页缓存（切页签时先画缓存、再后台刷新）
+  logsList: [],         // 日志缓存：日志页与概览「最近操作」共用
+  tabReady: {},         // 各页签是否已有可立即绘制的缓存数据（true=切过去即可先画，不必等网络）
+  tabAt: {},            // 各页签上次成功取数的时间戳（毫秒，避免短时间内重复后台刷新）
+  revalidating: {},     // 正在后台刷新中的页签，避免同一页签并发刷新
 };
 
 const familyKey = (pid) => "tb_family_" + pid;
@@ -198,14 +203,14 @@ async function runBusy(btn, label, fn) {
 //    部分浏览器）会无视 autocomplete="off"，只要字段是 type="password"，就在键盘上方
 //    弹出「无用户名 / 管理密码」这样的凭据面板，位置还跟着键盘乱飘。支持文本遮蔽的
 //    浏览器里改用 type="text"，就不再被当成密码字段；不支持则保持 type="password"。
-function hardenSecretInputs() {
+function hardenSecret(el) {
+  if (!el) return;
   if (!(window.CSS && CSS.supports && CSS.supports("-webkit-text-security", "disc"))) return;
-  ["#passcode", "#adminPw"].forEach((sel) => {
-    const el = $(sel);
-    if (!el) return;
-    el.type = "text";
-    el.classList.add("secret-masked");
-  });
+  el.type = "text";
+  el.classList.add("secret-masked");
+}
+function hardenSecretInputs() {
+  ["#passcode", "#adminPw", "#pcNewPasscode", "#pcNewAdminPw"].forEach((sel) => hardenSecret($(sel)));
 }
 
 // 2) 弹窗贴合可视区：软键盘弹出后 visualViewport 会收缩，只靠 position:fixed 屏幕居中
@@ -266,11 +271,12 @@ if (open) {
 // 弹出输入框 → 带上密码请求 → 密码不对可以重试 → 点取消则整个操作中止。
 // 该弹窗可能是叠在另一个弹窗（如「新建项目」表单）之上打开的，关闭时把下面那个还原回来，
 // 免得用户填到一半的表单被连带关掉、输入内容丢失。
-function askAdmin(reason, errText = "") {
+function askAdmin(reason, errText = "", hint = "") {
   return new Promise((resolve) => {
     const modal = $("#adminModal");
     modal._prev = openModal && openModal !== modal ? openModal : null;
     $("#adminReason").textContent = reason;
+    $("#adminHint").textContent = hint || "本口令的管理员密码";
     $("#adminMsg").textContent = errText;
     $("#adminPw").value = "";
     $("#adminPw").disabled = false;
@@ -301,7 +307,7 @@ function submitAdmin() {
   const modal = $("#adminModal");
   if (!modal._resolve) return;
   const pw = $("#adminPw").value.trim();
-  if (!pw) return ($("#adminMsg").textContent = "请输入管理权限密码");
+  if (!pw) return ($("#adminMsg").textContent = "请输入密码");
   const resolve = modal._resolve;
   modal._resolve = null;
   $("#adminPw").disabled = true;
@@ -318,10 +324,10 @@ function cancelAdmin() {
   if (resolve) resolve(null);
 }
 
-async function withAdmin(reason, run) {
+async function withAdmin(reason, run, hint = "") {
   let errText = "";
   for (;;) {
-    const pw = await askAdmin(reason, errText);
+    const pw = await askAdmin(reason, errText, hint);
     if (pw == null) return false; // 用户取消了操作
     try {
       await run(pw);
@@ -329,7 +335,7 @@ async function withAdmin(reason, run) {
       return true;
     } catch (e) {
       // 只是密码不对就停在弹窗里重试；其他错误（如未配置密码）直接抛给调用方
-      if (/管理权限密码/.test(e.message) && !/未配置/.test(e.message)) {
+      if (/密码不正确/.test(e.message)) {
         errText = e.message;
         setBusy($("#adminOkBtn"), false);
         $("#adminPw").disabled = false;
@@ -409,6 +415,12 @@ function logout() {
   state.editingMember = null;
   state.editingFamily = null;
   state.editingProject = null;
+  resetTabCache();
+  pcAdminPw = ""; // 退出后不再保留管理权限密码：登录页的口令管理需重新验证
+  pcRows = [];
+  pcEditing = null;
+  pcDeleting = null;
+  closePcModal(); // 退出时若口令管理弹窗开着，一并关掉
   show("loginView");
 }
 
@@ -533,6 +545,21 @@ try {
   }
 }
 
+// 切换项目 / 退出登录时清空所有页签缓存，避免把上一个项目的数据画到新项目上
+function resetTabCache() {
+  state.tabReady = {};
+  state.tabAt = {};
+  state.revalidating = {};
+  state.overview = null;
+  state.settlement = null;
+  state.logsList = [];
+  state.members = [];
+  state.carryItems = [];
+  state.shoppingList = [];
+  state.purchases = [];
+  state.shopItems = [];
+}
+
 async function enterProject(id, name) {
   state.projectId = Number(id);
   state.projectName = name || (state.projects.find((p) => p.id === state.projectId) || {}).name || "团建管理";
@@ -543,6 +570,7 @@ async function enterProject(id, name) {
 state.editingMember = null;
   state.editingFamily = null;
   state.editingBudget = false;
+  resetTabCache(); // 换项目：清掉上一个项目的页签缓存
   // 项目名可能已改名，状态也可能变了，取一次最新的
   state.projectStatus = (state.projects.find((p) => p.id === state.projectId) || {}).status || "";
   try {
@@ -557,6 +585,12 @@ state.editingMember = null;
   if (saved && state.families.some((f) => f.id === saved)) {
     state.familyId = saved;
     showApp();
+  } else if (!state.families.length) {
+    // 选择家庭界面已不再提供「新增家庭」：本项目还没有家庭时先进入项目，
+    // 到「成员」页新增后，再用顶栏「切换家庭」选中即可。
+    state.familyId = null;
+    showApp();
+    toast("本项目还没有家庭，可在「成员」页新增");
   } else {
     state.familyId = null;
     showPick();
@@ -601,12 +635,10 @@ function showPick() {
   show("pickView");
   const ro = isReadonly();
   $("#pickSub").textContent = `项目：${state.projectName} · 选择你所属的家庭，用于记录操作日志` + (ro ? "（项目已结束，仅可查看）" : "");
-  $("#newFamilyName").disabled = ro;
-  $("#addFamilyBtn").disabled = ro;
   const list = $("#pickList");
   list.innerHTML = state.families.length
     ? state.families.map((f) => `<button class="pick" data-id="${f.id}">${esc(f.name)}</button>`).join("")
-    : `<p class="hint">本项目还没有家庭，先在下面新增吧</p>`;
+    : `<p class="hint">本项目还没有家庭，请进入项目后在「成员」页新增</p>`;
   list.querySelectorAll(".pick").forEach((btn) =>
     btn.addEventListener("click", () => {
       state.familyId = Number(btn.dataset.id);
@@ -614,26 +646,6 @@ function showPick() {
       showApp();
     })
   );
-}
-
-async function pickAddFamily() {
-  const name = $("#newFamilyName").value.trim();
-  if (!name) return ($("#pickMsg").textContent = "请输入家庭名称");
-  const btn = $("#addFamilyBtn");
-  if (btn.dataset.busy === "1") return; // 正在提交，忽略重复点击
-  setBusy(btn, true, "新增中…");
-  try {
-    await api("/families", { method: "POST", body: { name } });
-    $("#newFamilyName").value = "";
-    $("#pickMsg").textContent = "";
-    await loadFamilies();
-    showPick();
-  } catch (e) {
-    $("#pickMsg").textContent = e.message;
-  } finally {
-    setBusy(btn, false);
-    if (isReadonly()) btn.disabled = true; // 已结束项目保持只读
-  }
 }
 
 // ---------- 主界面 ----------
@@ -653,8 +665,8 @@ function renderFamilyMenu() {
     : '<div class="hint" style="padding:8px 10px">本项目还没有家庭</div>';
 }
 
-function showApp() {
-  show("appView");
+// 只重建「界面框架」：标题、当前家庭、家庭下拉、页签栏（内容区交给 render / 缓存绘制）
+function renderChrome() {
   $("#projTitle").innerHTML = esc(state.projectName) + (isReadonly() ? ' <span class="tag off">已结束 · 只读</span>' : "");
   $("#whoami").textContent = "当前：" + familyName(state.familyId);
   renderFamilyMenu();
@@ -667,17 +679,27 @@ function showApp() {
   ).join("");
   $("#tabs")
     .querySelectorAll(".tab")
-    .forEach((btn) =>
-      btn.addEventListener("click", () => {
-        state.tab = btn.dataset.tab;
-        state.pending = null;
-        if (state.tab === "logs") state.newLogs = 0;
-        showApp();
-        render();
-      })
-    );
-  render();
+    .forEach((btn) => btn.addEventListener("click", () => openTab(btn.dataset.tab)));
+}
+
+// 切页签：先切高亮，再用缓存把新页签立刻画出来（网络延迟也不至于空等），随后后台刷新一次；
+// 再也没有原来的「showApp() + render()」两次整页渲染，请求数直接减半。
+function openTab(tab) {
+  state.tab = tab;
+  state.pending = null;
+  if (tab === "logs") state.newLogs = 0;
+  renderChrome();
+  if (paintTab(tab)) revalidate(tab);
+  else render();
+}
+
+function showApp() {
+  show("appView");
+  renderChrome();
+  const ready = render();
   if (!state.timer) state.timer = setInterval(poll, 10000);
+  // 当前页签取数完成后再预热其余页签，避免与当前页签重复请求同一接口
+  Promise.resolve(ready).then(prefetchRest).catch(() => {});
 }
 
 // ---------- 表单状态快照 ----------
@@ -741,19 +763,78 @@ async function render() {
   // 这里在每轮重建结束后核对页签是否被改过：改过就丢弃这一轮、按当前页签重画（最多 3 轮，防止打转）。
   for (let i = 0; i < 3; i++) {
     const tab = state.tab;
-    const fn = RENDERERS[tab];
+    const fn = FETCHERS[tab];
     if (!fn) return;
     const snap = snapshotForm();
     try {
       await fn();
+      state.tabReady[tab] = true;
+      state.tabAt[tab] = Date.now();
     } catch (e) {
-      if (state.tab === tab) $("#content").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+      if (state.tab === tab) {
+        $("#content").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+        return;
+      }
+      continue;
     }
     if (state.tab === tab) {
-      restoreForm(snap);
+      if (paintTab(tab)) restoreForm(snap);
       applyReadonly();
       return;
     }
+  }
+}
+
+// 用缓存把某个页签先画出来（切页签时先画缓存、网络回来再后台刷新）；没有缓存返回 false，交给整页渲染兜底
+function paintTab(tab) {
+  if (!state.tabReady[tab]) return false;
+  const paint = PAINTERS[tab];
+  if (!paint) return false;
+  try {
+    paint();
+    applyReadonly();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// 后台刷新某个页签：拿到新数据后只在用户仍停在该页签时重画；失败就继续用缓存，不打扰用户
+async function revalidate(tab) {
+  if (!FETCHERS[tab]) return;
+  if (state.revalidating[tab]) return; // 同一页签已在刷新，别叠加请求
+  if (state.tabAt[tab] && Date.now() - state.tabAt[tab] < 1000) return; // 刚刷新过，短时间内不再重复请求
+  state.revalidating[tab] = true;
+  try {
+    const snap = state.tab === tab ? snapshotForm() : null;
+    await FETCHERS[tab]();
+    state.tabReady[tab] = true;
+    state.tabAt[tab] = Date.now();
+    if (state.tab === tab && paintTab(tab)) restoreForm(snap);
+  } catch {
+    // 后台刷新失败：保持已画出的缓存内容
+  } finally {
+    state.revalidating[tab] = false;
+  }
+}
+
+// 进入项目后预热其余页签：第一次切到任意页签也能先画缓存、立刻响应，再后台刷新
+let prefetching = false;
+async function prefetchRest() {
+  if (prefetching) return;
+  prefetching = true;
+  try {
+    for (const t of TABS.map((x) => x.key)) {
+      if (state.tabReady[t] || !FETCHERS[t]) continue;
+      if ($("#appView").classList.contains("hidden")) return; // 已离开主界面就不预热
+      try {
+        await FETCHERS[t]();
+        state.tabReady[t] = true;
+        state.tabAt[t] = Date.now();
+      } catch {}
+    }
+  } finally {
+    prefetching = false;
   }
 }
 
@@ -767,7 +848,7 @@ function applyReadonly() {
   if (!c.querySelector(".banner")) {
     const b = document.createElement("div");
     b.className = "banner";
-    b.textContent = "项目已结束 · 当前为查看模式，内容不可修改；如需修改，请在项目中心用管理权限密码重启项目";
+    b.textContent = "项目已结束 · 当前为查看模式，内容不可修改；如需修改，请在项目中心用本口令的管理员密码重启项目";
     c.prepend(b);
   }
 }
@@ -867,7 +948,7 @@ function budgetPanelHtml(o) {
                <button class="ghost shrink" data-action="save-budget">保存</button>
                <button class="link" data-action="cancel-budget">取消</button>
              </div>
-             <p class="hint" style="margin:8px 0 0">填 0 可取消预算设置；设置 / 修改预算需要管理权限密码。</p>`
+             <p class="hint" style="margin:8px 0 0">填 0 可取消预算设置；设置 / 修改预算需要本口令的管理员密码。</p>`
           : budgetProgressHtml(o.total_amount, o.budget)
       }`;
 }
@@ -887,12 +968,19 @@ function renderBudgetPanel({ focusInput = false } = {}) {
 }
 
 // ---------- 概览 ----------
-async function renderOverview() {
-  const o = (await api("/overview")).data;
-  const st = (await api("/settlement")).data;
-  const logs = (await api("/logs?since=0")).data || [];
-  state.lastLogId = logs.length ? logs[logs.length - 1].id : 0;
-  state.overview = o; // 缓存一份，供「修改预算 / 取消」局部重画时取用
+async function fetchOverview() {
+  // 概览要用的三个接口互不依赖，并发拉取，别让网络延迟叠成三倍
+  const [o, st, logs] = await Promise.all([api("/overview"), api("/settlement"), api("/logs?since=0")]);
+  state.overview = o.data; // 缓存一份，供「修改预算 / 取消」局部重画时取用
+  state.settlement = st.data;
+  state.logsList = logs.data || [];
+  state.lastLogId = state.logsList.length ? state.logsList[state.logsList.length - 1].id : 0;
+}
+
+function paintOverview() {
+  const o = state.overview;
+  const st = state.settlement;
+  const logs = state.logsList || [];
   const recent = logs.slice(-6).reverse();
   const hasBudget = Number(o.budget) > 0;
   $("#content").innerHTML = `
@@ -935,9 +1023,8 @@ function paintCurrentTab() {
   }
 }
 
-async function renderMembers() {
+async function fetchMembers() {
   state.members = (await api("/members")).data || [];
-  paintMembers();
 }
 
 // 只重画成员页内容（用缓存数据），供纯前端切换调用
@@ -1014,9 +1101,8 @@ function paintMembers() {
 }
 
 // ---------- 携带物品 ----------
-async function renderCarry() {
+async function fetchCarry() {
   state.carryItems = (await api("/carry-items")).data || [];
-  paintCarry();
 }
 
 // 只重画携带物品页内容（用缓存数据）
@@ -1066,9 +1152,8 @@ return `<div class="section${isMine ? "" : " readonly"}">
 }
 
 // ---------- 采购清单 ----------
-async function renderShopping() {
+async function fetchShopping() {
   state.shoppingList = (await api("/shopping-items")).data || [];
-  paintShopping();
 }
 
 // 只重画采购清单页内容（用缓存数据）
@@ -1213,11 +1298,12 @@ $("#content").addEventListener("keydown", (e) => {
 });
 
 // ---------- 采购记录 ----------
-async function renderPurchases() {
-  state.purchases = (await api("/purchases")).data || [];
-  state.shopItems = (await api("/shopping-items")).data || [];
-  state.overview = (await api("/overview")).data || {};
-  paintPurchases();
+async function fetchPurchases() {
+  // 三个接口互不依赖，并发拉取
+  const [p, s, o] = await Promise.all([api("/purchases"), api("/shopping-items"), api("/overview")]);
+  state.purchases = p.data || [];
+  state.shopItems = s.data || [];
+  state.overview = o.data || {};
 }
 
 // 只重画采购记录页内容（用缓存数据），供纯前端切换调用
@@ -1278,8 +1364,12 @@ $("#content").innerHTML = `
 }
 
 // ---------- 结算 ----------
-async function renderSettlement() {
-  const s = (await api("/settlement")).data;
+async function fetchSettlement() {
+  state.settlement = (await api("/settlement")).data;
+}
+
+function paintSettlement() {
+  const s = state.settlement;
   $("#content").innerHTML = `
 <div class="cards">
       <div class="card"><div class="num">${money(s.total)}</div><div class="lbl">总花费</div></div>
@@ -1315,29 +1405,44 @@ async function renderSettlement() {
 }
 
 // ---------- 日志 ----------
-async function renderLogs() {
-  const logs = (await api("/logs?since=0")).data || [];
-  state.lastLogId = logs.length ? logs[logs.length - 1].id : 0;
+async function fetchLogs() {
+  state.logsList = (await api("/logs?since=0")).data || [];
+  state.lastLogId = state.logsList.length ? state.logsList[state.logsList.length - 1].id : 0;
+}
+
+function paintLogs() {
+  const logs = state.logsList || [];
   state.newLogs = 0;
   updateBadge();
   const canDel = !isReadonly();
   $("#content").innerHTML = logs.length
     ? `<div class="section-head" style="margin-bottom:6px">
-         <span class="hint">共 ${logs.length} 条${canDel ? " · 删除/清除需要管理权限密码" : ""}</span>
+         <span class="hint">共 ${logs.length} 条${canDel ? " · 删除/清除需要本口令的管理员密码" : ""}</span>
          ${canDel ? `<button class="link danger" data-action="clear-logs">清除全部日志</button>` : ""}
        </div>
        <div class="logs">${logs.slice().reverse().map((l) => logHtml(l, canDel)).join("")}</div>`
     : '<div class="empty">暂无操作记录</div>';
 }
 
-const RENDERERS = {
-  overview: renderOverview,
-  members: renderMembers,
-  carry: renderCarry,
-  shopping: renderShopping,
-  purchases: renderPurchases,
-  settlement: renderSettlement,
-  logs: renderLogs,
+// 取数（网络）与绘制（DOM）拆开：切页签时先用缓存画、再后台取数刷新
+const FETCHERS = {
+  overview: fetchOverview,
+  members: fetchMembers,
+  carry: fetchCarry,
+  shopping: fetchShopping,
+  purchases: fetchPurchases,
+  settlement: fetchSettlement,
+  logs: fetchLogs,
+};
+
+const PAINTERS = {
+  overview: paintOverview,
+  members: paintMembers,
+  carry: paintCarry,
+  shopping: paintShopping,
+  purchases: paintPurchases,
+  settlement: paintSettlement,
+  logs: paintLogs,
 };
 
 // ---------- 项目内事件委托 ----------
@@ -1564,7 +1669,7 @@ if (action === "del-project") {
       // 「结束项目」与「重启已结束的项目」都属于高风险操作，都要先过管理权限密码
       const isRestart = status === "进行中";
       const ok = await withAdmin(
-        isRestart ? `重启已结束的项目「${label}」` : `结束项目「${label}」（结束后项目内只读，需用管理权限密码才能重启）`,
+        isRestart ? `重启已结束的项目「${label}」` : `结束项目「${label}」（结束后项目内只读，需用本口令的管理员密码才能重启）`,
         async (pw) => {
           await api("/projects/" + id, { method: "PUT", body: { status }, withProject: false, adminPw: pw });
         }
@@ -1616,7 +1721,6 @@ $("#cancelProjBtn").addEventListener("click", closeNewProj);
 $("#newProjModal").addEventListener("click", (e) => {
   if (e.target === $("#newProjModal")) closeNewProj();
 });
-$("#addFamilyBtn").addEventListener("click", pickAddFamily);
 $("#logoutBtn").addEventListener("click", logout);
 $("#logoutBtn2").addEventListener("click", logout);
 $("#backHomeBtn").addEventListener("click", showHome);
@@ -1671,6 +1775,199 @@ $("#adminPw").addEventListener("keydown", (e) => {
     cancelAdmin();
   }
 });
+
+// ---------- 口令管理（登录页）----------
+// 一个口令对应一份独立的项目数据：登录某口令，项目中心与项目内只呈现该口令名下的项目。
+// 列出 / 新增 / 修改 / 删除都需要管理权限密码（走全局的管理密码弹窗校验）；
+// 本会话内验证通过后会记住，省去每次操作都重输；不写入 localStorage，退出登录即清除。
+let pcAdminPw = "";
+let pcRows = [];
+let pcEditing = null;
+let pcDeleting = null;
+
+function renderPcList() {
+  const box = $("#pcList");
+  if (!box) return;
+  if (!pcRows.length) {
+    box.innerHTML = '<div class="empty">还没有任何口令，请先新增一个</div>';
+    return;
+  }
+  box.innerHTML = pcRows
+    .map((r) => {
+      if (pcEditing === r.id) {
+        return `<div class="pc-row">
+          <input id="pc-edit-pw-${r.id}" value="${esc(r.passcode)}" placeholder="口令" />
+          <input id="pc-edit-adminpw-${r.id}" value="${esc(r.admin_passcode)}" placeholder="管理员密码" />
+          <input id="pc-edit-name-${r.id}" value="${esc(r.name)}" placeholder="备注名（可选）" />
+          <button class="ghost shrink" data-pc-action="save" data-id="${r.id}">保存</button>
+          <button class="link" data-pc-action="cancel">取消</button>
+        </div>`;
+      }
+      const del =
+        pcDeleting === r.id
+          ? `<button class="link danger" data-pc-action="confirm-del" data-id="${r.id}">确认删除</button>` +
+            `<button class="link" data-pc-action="cancel">取消</button>`
+          : `<button class="link danger" data-pc-action="del" data-id="${r.id}">删除</button>`;
+      return `<div class="pc-row">
+        <div class="pc-fields">
+          <span class="pc-label">口令：</span><span class="pc-val pc-pw">${esc(r.passcode)}</span>
+          <span class="pc-label">管理员密码：</span><span class="pc-val pc-pw">${esc(r.admin_passcode || "（未设置）")}</span>
+          <span class="pc-label">备注名：</span><span class="pc-val">${esc(r.name || "（无备注）")}</span>
+          <span class="pc-label">项目数：</span><span class="pc-val">${Number(r.project_count) || 0}</span>
+        </div>
+        <div class="pc-ops">
+          <button class="link" data-pc-action="edit" data-id="${r.id}">修改</button>
+          ${del}
+        </div>
+      </div>`;
+    })
+    .join("");
+  // 本弹窗里的密码输入框同样做软键盘加固（动态生成的编辑框也要）
+  box.querySelectorAll('input[type="password"]').forEach(hardenSecret);
+}
+
+// 带管理权限密码执行一步口令管理操作：返回 { ok, value }，ok=false 表示用户在弹窗里取消了
+async function pcRun(reason, run) {
+  if (pcAdminPw) {
+    try {
+      return { ok: true, value: await run(pcAdminPw) };
+    } catch (e) {
+      // 记着的密码已失效（例如后台改过）就清掉、回到弹窗重新验证；其它错误直接抛出
+      if (/密码不正确/.test(e.message)) pcAdminPw = "";
+      else throw e;
+    }
+  }
+  let value;
+  const done = await withAdmin(reason, async (pw) => {
+    value = await run(pw);
+    pcAdminPw = pw;
+  }, "超级密码");
+  return done ? { ok: true, value } : { ok: false };
+}
+
+async function pcRefresh() {
+  const r = await pcRun("查看已注册口令需要超级密码", (pw) => api("/passcodes", { withProject: false, adminPw: pw }));
+  if (r.ok) {
+    pcRows = r.value.data || [];
+    pcEditing = null;
+    pcDeleting = null;
+    renderPcList();
+  }
+}
+
+async function pcAdd() {
+  const passcode = $("#pcNewPasscode").value.trim();
+  const name = $("#pcNewName").value.trim();
+  const adminPasscode = $("#pcNewAdminPw").value.trim();
+  if (!passcode) return ($("#pcMsg").textContent = "请填写新口令");
+  if (!adminPasscode) return ($("#pcMsg").textContent = "请为该口令设置管理员密码（同一口令下的项目共用它）");
+  const btn = $("#pcAddBtn");
+  if (btn.dataset.busy === "1") return;
+  setBusy(btn, true, "新增中…");
+  try {
+    const r = await pcRun("新增口令需要超级密码", (pw) =>
+      api("/passcodes", { method: "POST", body: { passcode, name, adminPasscode }, withProject: false, adminPw: pw })
+    );
+    if (r.ok) {
+      $("#pcNewPasscode").value = "";
+      $("#pcNewName").value = "";
+      $("#pcNewAdminPw").value = "";
+      $("#pcMsg").textContent = "";
+      await pcRefresh();
+      toast("已新增口令");
+    }
+  } catch (e) {
+    $("#pcMsg").textContent = e.message;
+  } finally {
+    setBusy(btn, false);
+  }
+}
+
+async function pcSave(id) {
+  const passcode = $("#pc-edit-pw-" + id).value.trim();
+  const name = $("#pc-edit-name-" + id).value.trim();
+  const adminPasscode = $("#pc-edit-adminpw-" + id).value.trim();
+  if (!passcode) return ($("#pcMsg").textContent = "口令不能为空");
+  if (!adminPasscode) return ($("#pcMsg").textContent = "管理员密码不能为空（同一口令下的项目共用它）");
+  try {
+    const r = await pcRun("修改口令需要超级密码", (pw) =>
+      api("/passcodes/" + id, { method: "PUT", body: { passcode, name, adminPasscode }, withProject: false, adminPw: pw })
+    );
+    if (r.ok) {
+      $("#pcMsg").textContent = "";
+      pcEditing = null;
+      await pcRefresh();
+      toast("已修改口令");
+    }
+  } catch (e) {
+    $("#pcMsg").textContent = e.message;
+  }
+}
+
+async function pcDelete(id) {
+  try {
+    const r = await pcRun("删除口令需要超级密码", (pw) =>
+      api("/passcodes/" + id, { method: "DELETE", withProject: false, adminPw: pw })
+    );
+    if (r.ok) {
+      $("#pcMsg").textContent = "";
+      pcDeleting = null;
+      await pcRefresh();
+      toast("已删除口令");
+    }
+  } catch (e) {
+    $("#pcMsg").textContent = e.message;
+  }
+}
+
+function closePcModal() {
+  setModalOpen($("#pcModal"), false);
+}
+
+if ($("#pcManageToggle")) {
+  // 「管理口令」改为弹窗 + 蒙版（与「新建团建项目」同一套交互）：点蒙版或「关闭」都能退出
+  $("#pcManageToggle").addEventListener("click", async () => {
+    $("#pcMsg").textContent = "";
+    pcEditing = null;
+    pcDeleting = null;
+    renderPcList();
+    setModalOpen($("#pcModal"), true);
+    try {
+      await pcRefresh();
+    } catch (e) {
+      $("#pcMsg").textContent = e.message;
+    }
+  });
+  $("#pcModal").addEventListener("click", (e) => {
+    if (e.target === $("#pcModal")) closePcModal();
+  });
+  $("#pcCloseBtn").addEventListener("click", closePcModal);
+  $("#pcAddBtn").addEventListener("click", pcAdd);
+  $("#pcNewName").addEventListener("keydown", (e) => {
+    if (e.key === "Enter") pcAdd();
+  });
+  $("#pcList").addEventListener("click", async (e) => {
+    const btn = e.target.closest("[data-pc-action]");
+    if (!btn || btn.dataset.busy === "1") return;
+    const action = btn.dataset.pcAction;
+    const id = Number(btn.dataset.id) || 0;
+    if (action === "edit") {
+      pcEditing = id; pcDeleting = null; renderPcList();
+    } else if (action === "del") {
+      pcDeleting = id; pcEditing = null; renderPcList();
+    } else if (action === "cancel") {
+      pcEditing = null; pcDeleting = null; renderPcList();
+    } else if (action === "save") {
+      setBusy(btn, true, "保存中…");
+      await pcSave(id);
+      setBusy(btn, false);
+    } else if (action === "confirm-del") {
+      setBusy(btn, true, "删除中…");
+      await pcDelete(id);
+      setBusy(btn, false);
+    }
+  });
+}
 
 // ---------- 启动 ----------
 (async function init() {

@@ -4,7 +4,11 @@
 // 项目上下文：除 /auth/login、/health、/projects 外，其余接口都需要 X-Project-Id 头（或 ?project_id=），
 //             所有读写都限定在该项目内，不同项目之间数据互不影响。
 // 操作身份：进入项目后选择“我属于哪个家庭”，通过 X-Family-Id 头传入，日志记到家庭粒度。
-// 管理权限密码（第二个口令，环境变量 ADMIN_PASSCODE）：用于五类高风险操作 ——
+// 两套密码，各管一段：
+//  1) 超级密码（环境变量 SUPER_PASSCODE）：只管「口令管理」——登录页列出 / 新增 / 修改 / 删除口令；
+//     未配置 SUPER_PASSCODE 时口令管理直接停用。
+//  2) 每个口令自己的「管理员密码」（存在 passcodes.admin_passcode，同一口令下的项目共用它）：
+//     用于项目级高风险操作 ——
 //   1) 删除单条日志        DELETE /api/logs/<id>
 //   2) 清除项目全部日志    DELETE /api/logs      （不带 id，仅清当前项目）
 //   3) 删除项目（历史项目）DELETE /api/projects/<id>
@@ -39,8 +43,23 @@ async function sha256Hex(text) {
   const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
-function tokenFor(passcode) {
-  return sha256Hex("team-building::" + (passcode || ""));
+// 登录令牌绑定到「哪个口令」（passcodes 表主键 id）：
+//   token = "<id>.<sha256('team-building::<id>::<passcode>')>"
+// 因此：改口令文本会让旧令牌失效（需重新登录），只改备注名则不受影响。
+async function tokenFor(row) {
+  return row.id + "." + (await sha256Hex("team-building::" + row.id + "::" + (row.passcode || "")));
+}
+// 解析请求里的令牌并找回它对应的口令行；无效 / 已失效都返回 null
+async function authPasscode(request, env) {
+  const token = (request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "").trim();
+  if (!token) return null;
+  const dot = token.indexOf(".");
+  if (dot <= 0) return null;
+  const id = toId(token.slice(0, dot));
+  if (!id) return null;
+  const row = await env.DB.prepare("SELECT id, passcode, name, admin_passcode FROM passcodes WHERE id = ?").bind(id).first();
+  if (!row) return null;
+  return token === (await tokenFor(row)) ? row : null;
 }
 function actorFamilyId(request) {
   return toId(request.headers.get("x-family-id"));
@@ -55,16 +74,34 @@ function requestProjectId(request) {
   }
 }
 
-// ---------- 管理权限密码（第二道口令，用于删除日志 / 删除项目 / 重启项目）----------
+// ---------- 超级密码（只用于「口令管理」：列出 / 新增 / 修改 / 删除口令）----------
+// 独立环境变量 SUPER_PASSCODE；未配置时口令管理直接停用（拒绝并提示）。
 // 返回 null 表示校验通过；返回 Response 表示应直接把它作为结果返回。
-function requireAdmin(request, env) {
-  const expected = String(env.ADMIN_PASSCODE || "").trim();
+function requireSuper(request, env) {
+  const expected = String(env.SUPER_PASSCODE || "").trim();
   if (!expected) {
-    return err("服务器未配置管理权限密码（环境变量 ADMIN_PASSCODE），请联系管理员在 Cloudflare 后台补充", 500);
+    return err(
+      "服务器未配置超级密码（环境变量 SUPER_PASSCODE），口令管理暂不可用；请先在 Cloudflare 后台或本地 .dev.vars 配置后重试",
+      500
+    );
   }
   const provided = String(request.headers.get("x-admin-passcode") || "").trim();
-  if (!provided) return err("该操作需要管理权限密码", 403);
-  if (provided !== expected) return err("管理权限密码不正确", 403);
+  if (!provided) return err("该操作需要超级密码", 403);
+  if (provided !== expected) return err("超级密码不正确", 403);
+  return null;
+}
+
+// ---------- 口令的管理员密码（同一口令下的所有项目共用它）----------
+// 项目级高风险操作（新建 / 改名 / 结束 / 重启 / 删除项目，删除 / 清空日志，设置预算）用它校验；
+// 只用「当前登录口令」自己的管理员密码，不回退全局 ADMIN_PASSCODE。
+function requireProjectAdmin(request, me) {
+  const expected = String((me && me.admin_passcode) || "").trim();
+  if (!expected) {
+    return err("该口令还没有设置管理员密码，请先在登录页「管理口令」里为本口令设置", 403);
+  }
+  const provided = String(request.headers.get("x-admin-passcode") || "").trim();
+  if (!provided) return err("该操作需要本口令的管理员密码", 403);
+  if (provided !== expected) return err("管理员密码不正确", 403);
   return null;
 }
 
@@ -93,6 +130,122 @@ async function addLog(env, projectId, { familyId, action, targetType, targetId, 
     .run();
 }
 
+// ---------- 口令（注册表）与数据隔离 ----------
+// 一个口令 = 一个租户：项目的归属记在 projects.passcode_id，登录某口令只能看到本口令名下的项目。
+// schema.sql 之外再做一次幂等的「自愈」：表 / 字段缺失时补建；口令表为空时用环境变量口令建一条
+// 「默认口令」，并把还没有归属的历史项目都归到它名下，保证升级后旧项目依旧可见（每次进程只跑一次）。
+let schemaEnsured = false;
+async function ensureSchema(env) {
+  if (schemaEnsured) return;
+  try {
+    await env.DB
+      .prepare(
+        "CREATE TABLE IF NOT EXISTS passcodes (id INTEGER PRIMARY KEY AUTOINCREMENT, passcode TEXT NOT NULL UNIQUE, name TEXT NOT NULL DEFAULT '', admin_passcode TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')))"
+      )
+      .run();
+    try {
+      await env.DB.prepare("ALTER TABLE projects ADD COLUMN passcode_id INTEGER").run();
+    } catch {}
+    try {
+      await env.DB.prepare("ALTER TABLE passcodes ADD COLUMN admin_passcode TEXT NOT NULL DEFAULT ''").run();
+    } catch {}
+    const c = await env.DB.prepare("SELECT COUNT(*) AS c FROM passcodes").first();
+    if ((!c || !c.c) && String(env.PASSCODE || "").trim()) {
+      await env.DB
+        .prepare("INSERT INTO passcodes (passcode, name, admin_passcode) VALUES (?, ?, ?)")
+        .bind(String(env.PASSCODE).trim(), "默认口令", String(env.ADMIN_PASSCODE || "").trim())
+        .run();
+    }
+    // 老库升级：还没有管理员密码的口令，先用当前 ADMIN_PASSCODE 初始化（之后可在「管理口令」里各自改）
+    const legacyAdmin = String(env.ADMIN_PASSCODE || "").trim();
+    if (legacyAdmin) {
+      await env.DB
+        .prepare("UPDATE passcodes SET admin_passcode = ? WHERE admin_passcode IS NULL OR admin_passcode = ''")
+        .bind(legacyAdmin)
+        .run();
+    }
+    const def = await env.DB.prepare("SELECT id FROM passcodes ORDER BY id LIMIT 1").first();
+    if (def) {
+      await env.DB.prepare("UPDATE projects SET passcode_id = ? WHERE passcode_id IS NULL").bind(def.id).run();
+    }
+    schemaEnsured = true;
+  } catch {}
+}
+
+// ---------- 口令管理（登录页也要用，因此不要求登录令牌，只认超级密码 SUPER_PASSCODE）----------
+async function handlePasscodes(env, method, id, request) {
+  const denied = requireSuper(request, env);
+  if (denied) return denied;
+
+  if (method === "GET" && !id) {
+    const rows = await env.DB
+      .prepare(
+        `SELECT pc.id, pc.passcode, pc.name, pc.admin_passcode,
+           (SELECT COUNT(*) FROM projects p WHERE p.passcode_id = pc.id) AS project_count
+         FROM passcodes pc
+         ORDER BY pc.id`
+      )
+      .all();
+    return json({ ok: true, data: rows.results });
+  }
+
+  if (method === "POST") {
+    const b = await readJson(request);
+    const passcode = String((b && b.passcode) || "").trim();
+    const name = String((b && b.name) || "").trim();
+    const adminPasscode = String((b && (b.adminPasscode || b.admin_passcode)) || "").trim();
+    if (!passcode) return err("请填写口令");
+    if (passcode.length > 64) return err("口令过长，请不超过 64 个字符");
+    if (name.length > 40) return err("备注名过长，请不超过 40 个字");
+    if (!adminPasscode) return err("请为该口令设置管理员密码（同一口令下的项目共用它）");
+    if (adminPasscode.length > 64) return err("管理员密码过长，请不超过 64 个字符");
+    const dup = await env.DB.prepare("SELECT id FROM passcodes WHERE passcode = ?").bind(passcode).first();
+    if (dup) return err("该口令已存在");
+    const r = await env.DB
+      .prepare("INSERT INTO passcodes (passcode, name, admin_passcode) VALUES (?, ?, ?)")
+      .bind(passcode, name, adminPasscode)
+      .run();
+    return json({ ok: true, id: r.meta.last_row_id });
+  }
+
+  if (method === "PUT") {
+    if (!id) return err("缺少 id");
+    const old = await env.DB.prepare("SELECT id, passcode, name, admin_passcode FROM passcodes WHERE id = ?").bind(id).first();
+    if (!old) return err("口令不存在", 404);
+    const b = (await readJson(request)) || {};
+    const passcode = b.passcode === undefined ? old.passcode : String(b.passcode).trim();
+    const name = b.name === undefined ? old.name : String(b.name).trim();
+    const rawAdmin = b.adminPasscode !== undefined ? b.adminPasscode : b.admin_passcode;
+    const adminPasscode = rawAdmin === undefined ? old.admin_passcode : String(rawAdmin).trim();
+    if (!passcode) return err("口令不能为空");
+    if (passcode.length > 64) return err("口令过长，请不超过 64 个字符");
+    if (name.length > 40) return err("备注名过长，请不超过 40 个字");
+    if (!adminPasscode) return err("管理员密码不能为空（同一口令下的项目共用它）");
+    if (adminPasscode.length > 64) return err("管理员密码过长，请不超过 64 个字符");
+    if (passcode !== old.passcode) {
+      const dup = await env.DB.prepare("SELECT id FROM passcodes WHERE passcode = ? AND id != ?").bind(passcode, id).first();
+      if (dup) return err("该口令已存在");
+    }
+    await env.DB
+      .prepare("UPDATE passcodes SET passcode = ?, name = ?, admin_passcode = ? WHERE id = ?")
+      .bind(passcode, name, adminPasscode, id)
+      .run();
+    return json({ ok: true });
+  }
+
+  if (method === "DELETE") {
+    if (!id) return err("缺少 id");
+    const old = await env.DB.prepare("SELECT id, passcode FROM passcodes WHERE id = ?").bind(id).first();
+    if (!old) return err("口令不存在", 404);
+    const c = await env.DB.prepare("SELECT COUNT(*) AS c FROM projects WHERE passcode_id = ?").bind(id).first();
+    if (c && c.c > 0) return err(`该口令名下还有 ${c.c} 个项目，请先删除或转移这些项目再删除口令`);
+    await env.DB.prepare("DELETE FROM passcodes WHERE id = ?").bind(id).run();
+    return json({ ok: true });
+  }
+
+  return err("不支持的方法", 405);
+}
+
 // ---------- 主入口 ----------
 export async function onRequest(context) {
   const { request, env, params } = context;
@@ -106,33 +259,44 @@ export async function onRequest(context) {
       return json({ ok: true, service: "team-building" });
     }
 
+    await ensureSchema(env);
+
     if (route === "auth" && segs[1] === "login" && method === "POST") {
       const body = await readJson(request);
-      const ok = body && String(body.passcode || "") === String(env.PASSCODE || "");
-      if (!ok) return err("口令不正确", 401);
-      return json({ ok: true, token: await tokenFor(env.PASSCODE) });
+      const pc = String((body && body.passcode) || "").trim();
+      const row = pc
+        ? await env.DB.prepare("SELECT id, passcode, name FROM passcodes WHERE passcode = ?").bind(pc).first()
+        : null;
+      if (!row) return err("口令不正确", 401);
+      return json({ ok: true, token: await tokenFor(row) });
     }
 
-    // 以下接口均需登录
-    const token = (request.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
-    if (!token || token !== (await tokenFor(env.PASSCODE))) {
-      return err("未登录或口令已失效", 401);
+    // 口令管理：登录页也要能用，因此只认超级密码（SUPER_PASSCODE），不要求登录令牌
+    if (route === "passcodes") {
+      return handlePasscodes(env, method, id, request);
     }
+
+    // 以下接口均需登录；登录身份就是「哪个口令」
+    const me = await authPasscode(request, env);
+    if (!me) return err("未登录或口令已失效", 401);
 
     // 项目本身的管理（列表 / 新建 / 详情 / 改名 / 结束 / 删除）不需要项目上下文
     if (route === "projects") {
-      return handleProjects(env, method, id, request);
+      return handleProjects(env, method, id, request, me);
     }
 
-    // 其余业务接口都需要项目上下文，且项目必须真实存在
+    // 其余业务接口都需要项目上下文，且项目必须真实存在、且属于当前登录口令
     const projectId = requestProjectId(request);
     if (!projectId) return err("缺少项目信息，请先选择或新建团建项目", 400);
-    const proj = await env.DB.prepare("SELECT id, name, status, budget FROM projects WHERE id = ?").bind(projectId).first();
-    if (!proj) return err("项目不存在或已被删除", 404);
+    const proj = await env.DB
+      .prepare("SELECT id, name, status, budget, passcode_id FROM projects WHERE id = ?")
+      .bind(projectId)
+      .first();
+    if (!proj || Number(proj.passcode_id) !== Number(me.id)) return err("项目不存在或已被删除", 404);
 
     // 已结束的项目只读：查看没问题，但项目内任何内容都不能再改
     if (proj.status === "已结束" && method !== "GET") {
-      return err("项目已结束，只能查看；如需修改请先用管理权限密码重启项目", 403);
+      return err("项目已结束，只能查看；如需修改请先用本口令的管理员密码重启项目", 403);
     }
 
     switch (route) {
@@ -156,8 +320,8 @@ export async function onRequest(context) {
         if (method === "GET") return handleLogs(env, request, projectId);
         if (method === "DELETE") {
           // 带 id → 删除单条；不带 id → 一键清除当前项目的全部日志
-          if (id) return handleLogDelete(env, id, request, projectId);
-          return handleLogClear(env, request, projectId);
+          if (id) return handleLogDelete(env, id, request, projectId, me);
+          return handleLogClear(env, request, projectId, me);
         }
         return err("不支持的方法", 405);
       default:
@@ -169,7 +333,9 @@ export async function onRequest(context) {
 }
 
 // ---------- 项目 ----------
-async function handleProjects(env, method, id, request) {
+async function handleProjects(env, method, id, request, me) {
+  // 只认「本口令名下」的项目：不同口令之间互相看不到、也改不到，达到数据隔离
+  const tenant = me ? me.id : null;
   if (method === "GET" && !id) {
     // 项目列表（含统计），最新创建的排前面 —— 也就是「历史项目」列表
     const rows = await env.DB
@@ -179,14 +345,16 @@ async function handleProjects(env, method, id, request) {
            (SELECT COUNT(*)                 FROM members m   WHERE m.project_id  = p.id) AS member_count,
            (SELECT COALESCE(SUM(amount), 0) FROM purchases u WHERE u.project_id  = p.id) AS total_amount
          FROM projects p
+         WHERE p.passcode_id = ?
          ORDER BY p.id DESC`
       )
+      .bind(tenant)
       .all();
     return json({ ok: true, data: rows.results });
   }
 
   if (method === "GET" && id) {
-    const project = await env.DB.prepare("SELECT * FROM projects WHERE id = ?").bind(id).first();
+    const project = await env.DB.prepare("SELECT * FROM projects WHERE id = ? AND passcode_id = ?").bind(id, tenant).first();
     if (!project) return err("项目不存在", 404);
     const families = (await env.DB.prepare("SELECT * FROM families WHERE project_id = ? ORDER BY id").bind(id).all())
       .results;
@@ -197,8 +365,8 @@ async function handleProjects(env, method, id, request) {
   }
 
 if (method === "POST") {
-    // 新建项目属于需要管理权限密码的操作（与结束 / 删除项目同一套 ADMIN_PASSCODE）
-    const denied = requireAdmin(request, env);
+    // 新建项目属于高风险操作：用「当前口令的管理员密码」校验（同一口令下的项目共用它）
+    const denied = requireProjectAdmin(request, me);
     if (denied) return denied;
     const b = await readJson(request);
     const name = String((b && b.name) || "").trim();
@@ -207,8 +375,8 @@ if (method === "POST") {
     const families = Array.isArray(b && b.families) ? b.families : [];
 
     const r = await env.DB
-      .prepare("INSERT INTO projects (name, note, status) VALUES (?, ?, ?)")
-      .bind(name, note, "进行中")
+      .prepare("INSERT INTO projects (name, note, status, passcode_id) VALUES (?, ?, ?, ?)")
+      .bind(name, note, "进行中", tenant)
       .run();
     const pid = r.meta.last_row_id;
 
@@ -248,8 +416,8 @@ if (method === "POST") {
 
   if (method === "PUT") {
     if (!id) return err("缺少 id");
-    const old = await env.DB.prepare("SELECT * FROM projects WHERE id = ?").bind(id).first();
-if (!old) return err("项目不存在", 404);
+    const old = await env.DB.prepare("SELECT * FROM projects WHERE id = ? AND passcode_id = ?").bind(id, tenant).first();
+    if (!old) return err("项目不存在", 404);
     const b = (await readJson(request)) || {};
     const nextName = String(b.name ?? old.name).trim() || old.name;
     const nextStatus = String(b.status ?? old.status).trim() || old.status;
@@ -267,26 +435,26 @@ if (!old) return err("项目不存在", 404);
       nextBudget = round2(bv);
     }
     const budgetChanged = hasBudget && nextBudget !== budgetWas;
-    // 设置 / 修改 / 取消预算都属于高风险操作，需要管理权限密码（与删除日志等同一套 ADMIN_PASSCODE）
+    // 设置 / 修改 / 取消预算都属于高风险操作，需要本口令的管理员密码
     if (hasBudget) {
-      const denied = requireAdmin(request, env);
+      const denied = requireProjectAdmin(request, me);
       if (denied) return denied;
     }
-    // 项目改名同样需要管理权限密码；只改备注等其它字段不需要
+    // 项目改名同样需要本口令的管理员密码；只改备注等其它字段不需要
     if (nextName !== old.name) {
-      const denied = requireAdmin(request, env);
+      const denied = requireProjectAdmin(request, me);
       if (denied) return denied;
     }
 
     // 已结束的项目只能查看：改名 / 改备注 / 改预算 / 再次结束都不允许
     const isRestart = old.status === "已结束" && nextStatus === "进行中";
     if (old.status === "已结束" && !isRestart) {
-      return err("项目已结束，只能查看；如需修改请先用管理权限密码重启项目", 403);
+      return err("项目已结束，只能查看；如需修改请先用本口令的管理员密码重启项目", 403);
     }
-    // 结束项目 / 重启已结束的项目都属于高风险操作，需要管理权限密码
+    // 结束项目 / 重启已结束的项目都属于高风险操作，需要本口令的管理员密码
     const isEnd = old.status !== "已结束" && nextStatus === "已结束";
     if (isRestart || isEnd) {
-      const denied = requireAdmin(request, env);
+      const denied = requireProjectAdmin(request, me);
       if (denied) return denied;
     }
 
@@ -327,10 +495,10 @@ if (!old) return err("项目不存在", 404);
 
   if (method === "DELETE") {
     if (!id) return err("缺少 id");
-    const old = await env.DB.prepare("SELECT * FROM projects WHERE id = ?").bind(id).first();
+    const old = await env.DB.prepare("SELECT * FROM projects WHERE id = ? AND passcode_id = ?").bind(id, tenant).first();
     if (!old) return err("项目不存在", 404);
-    // 删除项目（含历史项目）属于高风险操作，需要管理权限密码
-    const denied = requireAdmin(request, env);
+    // 删除项目（含历史项目）属于高风险操作，需要本口令的管理员密码
+    const denied = requireProjectAdmin(request, me);
     if (denied) return denied;
     // 级联清理该项目下的全部数据
     for (const table of ["logs", "purchases", "shopping_items", "carry_items", "members", "families"]) {
@@ -963,9 +1131,9 @@ project: project ? { id: project.id, name: project.name, status: project.status 
 
 // ---------- 删除单条日志（高风险操作，需要管理权限密码）----------
 // 刻意不再为「删除日志」补写一条日志，否则删掉的内容又会被以另一种形式留下来。
-async function handleLogDelete(env, id, request, projectId) {
+async function handleLogDelete(env, id, request, projectId, me) {
   if (!id) return err("缺少 id");
-  const denied = requireAdmin(request, env);
+  const denied = requireProjectAdmin(request, me);
   if (denied) return denied;
   const old = await env.DB.prepare("SELECT id FROM logs WHERE id = ? AND project_id = ?").bind(id, projectId).first();
   if (!old) return err("日志不存在或已被删除", 404);
@@ -976,8 +1144,8 @@ async function handleLogDelete(env, id, request, projectId) {
 // ---------- 一键清除当前项目的全部日志（高风险操作，需要管理权限密码）----------
 // 仅清除请求项目上下文（X-Project-Id）对应的日志，其它项目的日志不受影响。
 // 与「删除单条日志」同理，刻意不再补写一条「清除了日志」的记录。
-async function handleLogClear(env, request, projectId) {
-  const denied = requireAdmin(request, env);
+async function handleLogClear(env, request, projectId, me) {
+  const denied = requireProjectAdmin(request, me);
   if (denied) return denied;
   const before = await env.DB.prepare("SELECT COUNT(*) AS c FROM logs WHERE project_id = ?").bind(projectId).first();
   await env.DB.prepare("DELETE FROM logs WHERE project_id = ?").bind(projectId).run();

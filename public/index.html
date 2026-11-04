@@ -50,6 +50,9 @@
       <input id="passcode" type="password" name="team-passcode" placeholder="口令" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore />
       <button id="loginBtn" class="primary block">进入</button>
       <p id="loginMsg" class="msg"></p>
+      <div class="pc-open-row">
+        <button id="pcManageToggle" class="link" type="button" aria-haspopup="dialog">管理口令</button>
+      </div>
     </div>
   </section>
 
@@ -91,16 +94,31 @@
     </div>
   </div>
 
+  <!-- 管理口令弹窗：从登录页右侧的「管理口令」打开，交互与「新建团建项目」一致（蒙版 + 居中卡片） -->
+  <div id="pcModal" class="modal hidden">
+    <div class="modal-card modal-wide">
+      <h3 class="modal-title">管理口令</h3>
+      <p class="modal-desc">一个口令对应一份独立的项目数据，登录某口令只能看到它名下的项目；同一口令下的项目共用该口令的「管理员密码」。列出 / 新增 / 修改 / 删除口令需要超级密码。</p>
+      <div class="form-row">
+        <input id="pcNewPasscode" type="password" name="new-passcode" placeholder="新口令" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore />
+        <input id="pcNewAdminPw" type="password" name="new-admin-passcode" placeholder="管理员密码" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore />
+        <input id="pcNewName" placeholder="备注名（可选）" />
+        <button id="pcAddBtn" class="ghost shrink">新增</button>
+      </div>
+      <div id="pcList" class="pc-list"></div>
+      <p id="pcMsg" class="msg"></p>
+      <div class="modal-actions">
+        <button id="pcCloseBtn" class="ghost">关闭</button>
+      </div>
+    </div>
+  </div>
+
   <!-- 选择家庭（项目内） -->
   <section id="pickView" class="view center hidden">
     <div class="panel">
       <h1 class="logo">你是本项目哪个家庭？</h1>
       <p class="sub" id="pickSub">用于记录操作日志，可随时切换</p>
       <div id="pickList" class="pick-list"></div>
-      <div class="add-row">
-        <input id="newFamilyName" placeholder="新增家庭名称" />
-        <button id="addFamilyBtn" class="ghost">新增</button>
-      </div>
       <p id="pickMsg" class="msg"></p>
       <button id="backHomeBtn" class="link">← 返回项目中心</button>
     </div>
@@ -129,7 +147,8 @@
     <div class="modal-card">
       <h3 class="modal-title">需要管理权限</h3>
       <p class="modal-desc" id="adminReason"></p>
-      <input id="adminPw" type="password" name="admin-passcode" placeholder="请输入管理权限密码" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore />
+      <p class="hint" id="adminHint" style="margin:-8px 0 10px"></p>
+      <input id="adminPw" type="password" name="admin-passcode" placeholder="请输入密码" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore />
       <p id="adminMsg" class="msg"></p>
       <div class="modal-actions">
         <button id="adminCancelBtn" class="ghost">取消</button>
