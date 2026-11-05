@@ -1139,7 +1139,11 @@ function applyReadonly() {
     const b = document.createElement("div");
     b.className = "banner";
     b.setAttribute("role", "status");
-    b.textContent = "项目已结束 · 当前为查看模式，内容不可修改；如需修改，请在项目中心用本口令的管理员密码重启项目";
+    // 锁图标表示只读；引用 index.html 顶部的 sprite。整句包在一个 span 里，
+    // 窄屏折行时每一行都按 text-align:center 居中对齐（图标是 inline 的，不占独立一行）
+    b.innerHTML =
+      '<svg class="banner-ico" aria-hidden="true" focusable="false"><use href="#icon-lock"></use></svg>' +
+      '<span class="banner-text">项目已结束<span class="banner-dot">·</span>当前为查看模式，内容不可修改</span>';
     c.prepend(b);
   }
 }
@@ -1734,12 +1738,28 @@ $("#content").addEventListener("pointermove", (e) => {
   const tip = row.querySelector(".task-tip");
   if (tip) placeTaskTip(row, tip, e.clientX);
 });
-// 触摸端没有 hover：点按抬起前先把气泡对到手指位置（focus-within 负责显示）
+// 触摸端没有 hover：点一下把气泡固定在那一行，再点一次收起（同时只留一个）。
+// 用 .tip-open 而不是让 :focus-within 负责显示 —— 鼠标点击同样会让行拿到焦点，
+// 那就会「点过 A 行、再悬停 B 行」时两个气泡同时亮着。
 $("#content").addEventListener("pointerdown", (e) => {
   const row = e.target.closest && e.target.closest(".task-row");
-  if (!row) return;
-  const tip = row.querySelector(".task-tip");
-  if (tip) placeTaskTip(row, tip, e.clientX);
+  const tip = row && row.querySelector(".task-tip");
+  // 鼠标（以及个别浏览器报空的 pointerType）走 :hover 即可，这里只清掉触摸留下的固定气泡
+  if (e.pointerType !== "touch" && e.pointerType !== "pen") {
+    document.querySelectorAll(".task-row.tip-open").forEach((r) => r.classList.remove("tip-open"));
+    return;
+  }
+  const wasOpen = !!(row && row.classList.contains("tip-open"));
+  document.querySelectorAll(".task-row.tip-open").forEach((r) => r.classList.remove("tip-open"));
+  if (!tip) return;
+  if (!wasOpen) row.classList.add("tip-open");
+  placeTaskTip(row, tip, e.clientX);
+});
+
+// 点在别处（侧栏、顶栏、空白）时收起触摸固定的气泡
+document.addEventListener("pointerdown", (e) => {
+  if (e.target.closest && e.target.closest(".task-row")) return;
+  document.querySelectorAll(".task-row.tip-open").forEach((r) => r.classList.remove("tip-open"));
 });
 
 function placeTaskTip(row, tip, clientX) {

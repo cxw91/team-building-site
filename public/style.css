@@ -65,6 +65,14 @@
   --danger-bg: #fff0f4;
   --danger-line: rgba(207, 28, 69, 0.3);
 
+  /* 只读提示条（项目已结束后置顶的一条琥珀色告示）。
+     用琥珀而不是品牌紫：紫色在这套界面里到处都是，告示条混进去就不像「提示」了；
+     也不该用 --danger 的红，因为「已结束」不是错误，只是一种受限状态。 */
+  --warn: #8a5605;
+  --warn-bg: #fff6e3;
+  --warn-line: rgba(180, 118, 10, 0.36);
+  --warn-sh: rgba(180, 118, 10, 0.22);
+
   /* 渐变 */
   --grad: linear-gradient(132deg, #5b4be0 0%, #7b3fe4 55%, #8f46e8 100%);
   /* 边框流光的三个色标。注意：conic-gradient 必须写在「用它的元素」上，
@@ -172,6 +180,14 @@ html[data-theme="dark"] {
   --danger: #ff8fa5;
   --danger-bg: #2c111a;
   --danger-line: rgba(255, 143, 165, 0.32);
+
+  /* 深色下的只读提示：底色用不透明的暖深棕。
+     不能用「半透明琥珀」——页面背后有极光光团，半透明底会把紫色透上来，
+     同一条横幅左黄右紫，很难看。 */
+  --warn: #f6c46a;
+  --warn-bg: #241c11;
+  --warn-line: rgba(246, 196, 106, 0.3);
+  --warn-sh: rgba(245, 158, 11, 0.18);
 
   --grad: linear-gradient(132deg, #5b4be0 0%, #7b3fe4 55%, #8f46e8 100%);
 
@@ -479,6 +495,48 @@ html[data-theme="dark"] .bg-vignette {
   padding: 26px 34px 72px;
   min-width: 0;
   animation: fade-in 0.2s var(--ease) both;
+}
+
+/* ---------- 只读提示条（项目已结束） ---------- */
+/* 由 app.js 的 applyReadonly() 插到 #content 最前面。
+   排版用块级 + text-align:center，图标以 inline 方式排进文字流：
+   如果用 flex + justify-content:center，图标会占掉左侧一格宽度，
+   多行文字的中心就比屏幕中心偏右几个像素，看着不居中。 */
+.banner {
+  display: block;
+  margin: 0 0 16px;
+  padding: 11px 18px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--warn-line);
+  background: var(--warn-bg);
+  color: var(--warn);
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 1.7;
+  letter-spacing: 0.01em;
+  text-align: center;
+  text-wrap: pretty; /* 支持时避免最后一行只剩一两个字 */
+  /* 中文默认任意字符间都能断行，会把「查看模式」拆成「查看模 / 式」。
+     keep-all 只允许在空格与标点处断行，断行点就落在「·」和「，」上；
+     再用 overflow-wrap:anywhere 兜住极窄屏万一放不下的情况。 */
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+  box-shadow: 0 12px 26px -22px var(--warn-sh);
+}
+
+.banner-ico {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  margin-right: 7px;
+  vertical-align: -2px;
+  opacity: 0.9;
+}
+
+/* 分隔符「·」两侧留一点气口，长句断行时也不会挤在字里 */
+.banner .banner-dot {
+  margin: 0 6px;
+  opacity: 0.65;
 }
 
 /* ---------- 侧边栏 ---------- */
@@ -1360,20 +1418,26 @@ input[type="number"] {
   position: relative;
 }
 
+/* 气泡的三种触发来源：鼠标悬停、键盘聚焦、触摸点按（.tip-open 由 JS 挂）。
+   这里刻意不用 :focus-within —— 鼠标点一下行也会让它获得焦点，
+   于是「点过 A 行、再悬停 B 行」时 A 的气泡被焦点钉住，屏幕上同时出现两个气泡。 */
 .task-row:hover,
-.task-row:focus-within {
+.task-row:focus-visible,
+.task-row.tip-open {
   z-index: 4; /* 气泡要盖住上一行，否则会被下一行的轨道压住 */
 }
 
 /* 悬停反馈：家名与轨道描边转成品牌紫，明确「正在看哪一家」 */
 .task-row:hover .task-fam,
-.task-row:focus-within .task-fam {
+.task-row:focus-visible .task-fam,
+.task-row.tip-open .task-fam {
   color: var(--brand-ink);
   transition: color 0.14s var(--ease);
 }
 
 .task-row:hover .task-track,
-.task-row:focus-within .task-track {
+.task-row:focus-visible .task-track,
+.task-row.tip-open .task-track {
   box-shadow: inset 0 0 0 1px var(--brand-line);
 }
 
@@ -1422,7 +1486,8 @@ input[type="number"] {
 }
 
 .task-row:hover .task-tip,
-.task-row:focus-within .task-tip {
+.task-row:focus-visible .task-tip,
+.task-row.tip-open .task-tip {
   opacity: 1;
   visibility: visible;
   transform: translateY(0);
@@ -3231,6 +3296,14 @@ html[data-theme="dark"] .theme-icon--moon {
   .content {
     padding-left: 12px;
     padding-right: 12px;
+  }
+
+  /* 只读提示条：手机上字号与内边距各收一档，24 个字的整句仍能一行放下，
+     不必挤到贴边或折成两行 */
+  .banner {
+    padding: 10px 12px;
+    font-size: 12px;
+    margin-bottom: 14px;
   }
 
   /* 主输入框独占一行，按钮靠右 */
