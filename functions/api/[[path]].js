@@ -792,16 +792,25 @@ async function handleShoppingItems(env, method, id, request, projectId) {
   if (method === "POST") {
     const b = await readJson(request);
     if (!b || !String(b.name || "").trim()) return err("缺少采购项名称");
+    const name = String(b.name).trim();
+    // 同名项在清单里只允许存在一条：候选框 / 「已购」派生 / 采购记录的按名关联都以名字为准，
+    // 一旦出现两条同名项，接单和状态就会落在错误的那一条上。
+    // 比较用 trim 后的精确匹配（不做大小写折叠：中文为主，「Cola / cola」按两种写法处理更符合预期）。
+    const dup = await env.DB
+      .prepare("SELECT id FROM shopping_items WHERE project_id = ? AND TRIM(name) = ?")
+      .bind(projectId, name)
+      .first();
+    if (dup) return err("清单里已经有「" + name + "」了，不能重复添加", 409);
     const r = await env.DB
       .prepare("INSERT INTO shopping_items (project_id, name, quantity, unit, status, note) VALUES (?, ?, ?, ?, ?, ?)")
-      .bind(projectId, String(b.name).trim(), b.quantity || "", b.unit || "", b.status || "待购", b.note || "")
+      .bind(projectId, name, b.quantity || "", b.unit || "", b.status || "待购", b.note || "")
       .run();
     await addLog(env, projectId, {
       familyId: actorFamilyId(request),
       action: "新增采购项",
       targetType: "shopping_item",
       targetId: r.meta.last_row_id,
-      detail: String(b.name).trim(),
+      detail: name,
     });
     return json({ ok: true, id: r.meta.last_row_id });
   }
@@ -865,25 +874,26 @@ async function handleShoppingItems(env, method, id, request, projectId) {
     if (b.status !== undefined && b.status !== old.status) {
       return err("采购状态由「采购记录」自动同步，不能手工修改；请到采购记录里登记或删除", 403);
     }
+    // 名称是关联键：候选框、按名派生的「已购」、历史采购记录的兜底匹配都靠它，
+    // 改名会让老记录对不上号，所以不允许改；要换名字请删掉这一项重新添加。
+    if (b.name !== undefined && String(b.name).trim() !== old.name) {
+      return err("采购项名称不能修改；如果要换名字，请删掉这一项后重新添加", 403);
+    }
 
+    // 允许改的只有「数量 / 单位」，且不限家庭 —— 清单是公共的，谁发现写错了都能顺手改。
+    const nextQty = b.quantity !== undefined ? String(b.quantity).trim() : old.quantity;
+    const nextUnit = b.unit !== undefined ? String(b.unit).trim() : old.unit;
+    if (nextQty === old.quantity && nextUnit === old.unit) return json({ ok: true });
     await env.DB
-      .prepare("UPDATE shopping_items SET name = ?, quantity = ?, unit = ?, status = ?, note = ? WHERE id = ? AND project_id = ?")
-      .bind(
-        b.name ?? old.name,
-        b.quantity ?? old.quantity,
-        b.unit ?? old.unit,
-        b.status ?? old.status,
-        b.note ?? old.note,
-        id,
-        projectId
-      )
+      .prepare("UPDATE shopping_items SET quantity = ?, unit = ? WHERE id = ? AND project_id = ?")
+      .bind(nextQty, nextUnit, id, projectId)
       .run();
     await addLog(env, projectId, {
       familyId: actorFamilyId(request),
-      action: "修改采购项",
+      action: "修改采购项数量",
       targetType: "shopping_item",
       targetId: id,
-      detail: `${b.name ?? old.name}（${b.status ?? old.status}）`,
+      detail: `${old.name}：${old.quantity || "无数量"}${old.unit || ""} → ${nextQty || "无数量"}${nextUnit || ""}`,
     });
     return json({ ok: true });
   }
@@ -1021,39 +1031,27 @@ async function handlePurchases(env, method, id, request, projectId) {
     const old = await env.DB.prepare("SELECT * FROM purchases WHERE id = ? AND project_id = ?").bind(id, projectId).first();
     if (!old) return err("采购记录不存在", 404);
     const b = (await readJson(request)) || {};
-    // 若要把这笔采购改记到别的家庭，该家庭同样必须属于当前项目
-    const nextFamily = b.family_id !== undefined ? toId(b.family_id) : null;
-    if (nextFamily) {
-      const belong = await env.DB
-        .prepare("SELECT id FROM families WHERE id = ? AND project_id = ?")
-        .bind(nextFamily, projectId)
-        .first();
-      if (!belong) return err("所选家庭不属于当前项目", 400);
+    // 只能改自家登记的记录，且只改金额：物品、登记家庭、时间一概不开放，
+    // 否则一笔别人的账可以被改到任意家庭名下，结算口径就乱了。
+    const myFamily = actorFamilyId(request);
+    if (!myFamily) return err("请先选择你所属的家庭", 400);
+    if (Number(old.family_id) !== Number(myFamily)) {
+      return err("只能修改自家登记的采购金额，其他家庭的记录只能查看", 403);
     }
-    const nextItemName = String(b.item_name ?? old.item_name).trim() || old.item_name;
+    if (b.amount === undefined) return err("目前只支持修改金额");
+    const amount = Number(b.amount);
+    if (!Number.isFinite(amount) || amount < 0) return err("金额必须是不小于 0 的数字");
+    if (amount === Number(old.amount)) return json({ ok: true });
     await env.DB
-      .prepare("UPDATE purchases SET item_name = ?, family_id = ?, amount = ?, quantity = ?, note = ? WHERE id = ? AND project_id = ?")
-      .bind(
-        nextItemName,
-        nextFamily || old.family_id,
-        b.amount !== undefined ? Number(b.amount) || 0 : old.amount,
-        b.quantity ?? old.quantity,
-        b.note ?? old.note,
-        id,
-        projectId
-      )
+      .prepare("UPDATE purchases SET amount = ? WHERE id = ? AND project_id = ?")
+      .bind(amount, id, projectId)
       .run();
-    // 名称改掉以后，原先关联的清单项可能已经没有采购记录了：两边都按记录重新派生一次
-    const beforeItem = await findLinkedShopItem(env, projectId, old.item_id, old.item_name);
-    if (beforeItem) await syncShopItemStatus(env, projectId, beforeItem.id);
-    const afterItem = await findLinkedShopItem(env, projectId, old.item_id, nextItemName);
-    if (afterItem && (!beforeItem || afterItem.id !== beforeItem.id)) await syncShopItemStatus(env, projectId, afterItem.id);
     await addLog(env, projectId, {
-      familyId: actorFamilyId(request),
-      action: "修改采购",
+      familyId: myFamily,
+      action: "修改采购金额",
       targetType: "purchase",
       targetId: id,
-      detail: `${b.item_name ?? old.item_name} ¥${b.amount !== undefined ? b.amount : old.amount}`,
+      detail: `${old.item_name}：¥${Number(old.amount).toFixed(2)} → ¥${amount.toFixed(2)}`,
     });
     return json({ ok: true });
   }

@@ -53,6 +53,9 @@ lastLogId: 0,
   pending: null,        // 待确认删除：{ kind, id }
   editingMember: null,  // 正在编辑的成员 id
   editingFamily: null,  // 正在重命名的家庭 id
+  editingShop: null,    // 正在改「数量 / 单位」的采购项 id
+  editingPurchase: null,// 正在改金额的采购记录 id
+  purMenuId: null,      // 采购明细里「更多操作」菜单展开在哪一行（只允许同时开一个）
 editingProject: null, // 正在改名的项目 id
   editingBudget: false, // 概览里是否正在编辑项目预算
   editingBonus: false, // 概览里是否正在编辑任务奖金
@@ -166,6 +169,8 @@ const BUSY_ACTIONS = {
   "add-carry": "添加中…",
   "toggle-carry": "保存中…",
   "add-shop": "添加中…",
+  "save-shop-edit": "保存中…",
+  "save-purchase-amount": "保存中…",
   "claim-shop": "接单中…",
   "unclaim-shop": "取消中…",
   "add-purchase": "登记中…",
@@ -562,6 +567,9 @@ function logout() {
   state.editingMember = null;
   state.editingFamily = null;
   state.editingProject = null;
+  state.editingShop = null;
+  state.editingPurchase = null;
+  state.purMenuId = null;
   resetTabCache();
   pcAdminPw = ""; // 退出后不再保留管理权限密码：登录页的口令管理需重新验证
   pcRows = [];
@@ -744,6 +752,9 @@ async function enterProject(id, name) {
 state.editingMember = null;
   state.editingFamily = null;
   state.editingBudget = false;
+  state.editingShop = null;
+  state.editingPurchase = null;
+  state.purMenuId = null;
   resetTabCache(); // 换项目：清掉上一个项目的页签缓存
   // 项目名可能已改名，状态也可能变了，取一次最新的
   state.projectStatus = (state.projects.find((p) => p.id === state.projectId) || {}).status || "";
@@ -959,6 +970,10 @@ function openTab(tab) {
   if (tab === "logs") state.newLogs = 0;
   // 离开采购记录页时把名称候选框收起，免得把「正开着」的状态带到下次切回来
   if (tab !== "purchases") state.purSuggestOpen = false;
+  // 行内编辑态也不跨页签：切走就当放弃修改，回来是干净的列表
+  if (tab !== "shopping") state.editingShop = null;
+  if (tab !== "purchases") state.editingPurchase = null;
+  if (tab !== "purchases") state.purMenuId = null;
   renderChrome();
   if (paintTab(tab)) revalidate(tab);
   else render();
@@ -1623,11 +1638,29 @@ function paintShopping() {
         <input id="shop-unit" class="shrink" style="flex:0 0 70px" placeholder="单位" />
         <button class="ghost shrink" data-action="add-shop">添加</button>
       </div>
-      <p class="hint" style="margin:8px 0 0"></p>
+      <p class="hint" style="margin:8px 0 0">名称不能重复；数量和单位可修改</p>
       <div style="margin-top:10px">
         ${items.length
           ? items
               .map((i) => {
+                // 编辑态：只放开「数量 / 单位」两个输入。名称是关联键（候选框、已购派生、老记录的按名匹配），
+                // 改名会断掉历史关联，所以这里连输入框都不给。
+                if (state.editingShop === i.id) {
+                  return `<div class="row shop-row row-edit">
+                    <div class="main">
+                      <div class="name">${esc(i.name)}</div>
+                      <div class="meta">修改数量 / 单位（所有家庭都能改）</div>
+                    </div>
+                    <div class="edit-fields">
+                      <input id="shop-edit-qty-${i.id}" class="shrink" value="${esc(i.quantity || "")}" placeholder="数量" inputmode="text" aria-label="数量" autocomplete="off" />
+                      <input id="shop-edit-unit-${i.id}" class="shrink" value="${esc(i.unit || "")}" placeholder="单位" aria-label="单位" autocomplete="off" />
+                    </div>
+                    <div class="edit-btns">
+                      <button class="primary shrink" data-action="save-shop-edit" data-id="${i.id}">保存</button>
+                      <button class="ghost shrink" data-action="cancel-shop-edit">取消</button>
+                    </div>
+                  </div>`;
+                }
                 // 副信息行（浅色小字）：数量 / 单位 / 备注，再接接单家庭标记与接单时间
                 const sub = [i.quantity && esc(i.quantity), i.unit && esc(i.unit), i.note && esc(i.note)]
                   .filter(Boolean)
@@ -1642,6 +1675,7 @@ function paintShopping() {
                   <div class="shop-actions">
                     ${claimAction(i)}
                     ${shopStatusCell(i)}
+                    <button class="link" data-action="edit-shop" data-id="${i.id}" title="修改这一项的数量和单位（不改名称）">修改</button>
                     ${
                       i.status === "已购"
                         ? // 已经登记过采购记录的项不能删：删除控件保持占用但不可用，原因写进 title / aria-label，
@@ -1818,6 +1852,15 @@ function placeTaskTip(row, tip, clientX) {
 }
 
 $("#content").addEventListener("keydown", (e) => {
+  // 行内编辑（采购项数量/单位、采购记录金额）：回车 = 保存，Esc = 取消，和旁边的按钮等价
+  if (/^(shop-edit-qty|shop-edit-unit|pur-edit-amount)-/.test(e.target.id || "")) {
+    if (e.key !== "Enter" && e.key !== "Escape") return;
+    e.preventDefault();
+    const row = e.target.closest(".row-edit");
+    const btn = row && row.querySelector(e.key === "Enter" ? '[data-action^="save-"]' : '[data-action^="cancel-"]');
+    if (btn) btn.click();
+    return;
+  }
   if (e.target.id !== "pur-item") return;
   if (e.key === "ArrowDown") {
     e.preventDefault();
@@ -1847,19 +1890,108 @@ async function fetchPurchases() {
 
 // 采购明细里的一行。抽成函数是为了让「整页重画」与「登记成功后就地插一行」共用同一份模板，
 // 两条路径产出的 DOM 必须完全一致，否则同一笔记录在两种路径下会长得不一样。
+// 自家登记的这一行可以改金额 / 删除（其他家庭只看得到，没有这个入口；后端也会再拦一次）。
+// 「改金额 / 删除」两个文字按钮合成行尾一个「⋯」图标 + 下拉菜单，行宽紧张时（手机）不会把
+// 金额挤到换行。删除仍走行内二次确认，菜单只是换了入口，不改变危险操作的确认流程。
 function purchaseRowHtml(p) {
+  const id = Number(p.id);
   const mine = Number(p.family_id) === Number(state.familyId);
+  const meta = `${esc(familyName(p.family_id))} · ${fmtTime(p.purchased_at)}${p.quantity ? " · " + esc(p.quantity) : ""}`;
+
+  if (mine && Number(state.editingPurchase) === id) {
+    return `<div class="row row-edit">
+      <div class="main"><div class="name">${esc(p.item_name)}</div>
+        <div class="meta">${meta} · 只可修改金额</div></div>
+      <div class="edit-fields">
+        <input id="pur-edit-amount-${p.id}" class="shrink amt-input" type="text" inputmode="decimal" value="${esc(String(Number(p.amount) || 0))}" placeholder="金额" aria-label="金额" autocomplete="off" />
+      </div>
+      <div class="edit-btns">
+        <button class="primary shrink" data-action="save-purchase-amount" data-id="${p.id}">保存</button>
+        <button class="ghost shrink" data-action="cancel-purchase-edit">取消</button>
+      </div>
+    </div>`;
+  }
+
+  // 删除的二次确认态：菜单里点「删除」后本行直接变成「确认删除 / 取消」，
+  // 不放回菜单里，免得用户在菜单还开着的时候点到不可撤销的按钮。
+  if (mine && isPending("purchase", id)) {
+    return `<div class="row">
+      <div class="main"><div class="name">${esc(p.item_name)}</div>
+        <div class="meta">${meta}</div></div>
+      <span class="amt">${money(p.amount)}</span>
+      <div class="row-confirm">
+        <button class="link danger" data-action="confirm-del" data-kind="purchase" data-id="${p.id}">确认删除</button>
+        <button class="link" data-action="cancel-del">取消</button>
+      </div>
+    </div>`;
+  }
+
+  const menuOpen = mine && Number(state.purMenuId) === id;
   return `<div class="row">
     <div class="main"><div class="name">${esc(p.item_name)}</div>
-      <div class="meta">${esc(familyName(p.family_id))} · ${fmtTime(p.purchased_at)}${p.quantity ? " · " + esc(p.quantity) : ""}</div></div>
+      <div class="meta">${meta}</div></div>
     <span class="amt">${money(p.amount)}</span>
     ${
       mine
-        ? dangerCell("purchase", p.id, "del-purchase")
-        : '<span class="tag off" title="只有登记这笔采购的家庭能删除">他家登记</span>'
+        ? `<div class="row-more" data-id="${p.id}">
+            <button class="tag more-btn${menuOpen ? " on" : ""}" data-action="toggle-pur-menu" data-id="${p.id}"
+              aria-haspopup="true" aria-expanded="${menuOpen ? "true" : "false"}"
+              aria-label="自家登记：可改金额或删除" title="可改金额或删除">自家登记</button>
+            <div class="row-menu" role="menu" aria-label="可改金额或删除"${menuOpen ? "" : " hidden"}>
+              <button class="row-menu-item" role="menuitem" data-action="edit-purchase" data-id="${p.id}">改金额</button>
+              <button class="row-menu-item danger" role="menuitem" data-action="del-purchase" data-kind="purchase" data-id="${p.id}">删除</button>
+            </div>
+          </div>`
+        : '<span class="tag off" title="只有登记这笔采购的家庭能修改或删除">他家登记</span>'
     }
   </div>`;
 }
+
+// 「更多操作」菜单的开关：只切 hidden / aria / 位置，不重画整页 ——
+// 整页重画会重建整张列表，正是之前修过的「列表闪一下」。
+// state.purMenuId 记当前展开那一行的 id，天然保证同时只开一个。
+function syncPurMenus() {
+  document.querySelectorAll("#pur-rows .row-more").forEach((wrap) => {
+    const open = state.purMenuId !== null && Number(state.purMenuId) === Number(wrap.dataset.id);
+    const menu = wrap.querySelector(".row-menu");
+    const btn = wrap.querySelector(".more-btn");
+    if (menu) menu.hidden = !open;
+    if (btn) {
+      btn.classList.toggle("on", open);
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+    }
+  });
+}
+
+function closePurMenu() {
+  if (state.purMenuId === null) return;
+  state.purMenuId = null;
+  syncPurMenus();
+}
+
+function openPurMenu(btn) {
+  state.purMenuId = Number(btn.dataset.id);
+  syncPurMenus();
+  const menu = btn.parentElement && btn.parentElement.querySelector(".row-menu");
+  if (!menu) return;
+  // 默认向下弹；下方放不下（最后几行尤其常见）且上方更宽裕时改成向上弹。
+  // 菜单刚从 hidden 变可见，同一帧内量 offsetHeight 已有值，不会闪。
+  menu.classList.remove("up");
+  const b = btn.getBoundingClientRect();
+  const need = menu.offsetHeight + 12;
+  if (b.bottom + need > window.innerHeight - 8 && b.top - need > 8) menu.classList.add("up");
+}
+
+// 点菜单外的任何地方都收起；Esc 同样收起（键盘用户唯一的出路）
+document.addEventListener("pointerdown", (e) => {
+  if (state.purMenuId === null) return;
+  if (e.target instanceof Element && e.target.closest(".row-more")) return;
+  closePurMenu();
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closePurMenu();
+});
 
 // 「各家采购金额」下面那排家庭标签
 function famSummaryHtml(perFamily) {
@@ -1883,6 +2015,7 @@ function paintPurchases() {
   const suggestWasOpen = !!(suggestBox && !suggestBox.hidden);
   state.purSuggestOpen = false;  // 先按收起处理；若之前确实开着，末尾会再打开
   state.purActive = -1;
+  state.purMenuId = null;        // 整页重画后菜单自然收起，避免留下一个位置不对的浮层
   const perFamily = {};
   list.forEach((p) => (perFamily[p.family_id] = (perFamily[p.family_id] || 0) + (Number(p.amount) || 0)));
 $("#content").innerHTML = `
@@ -2128,6 +2261,12 @@ $("#content").addEventListener("click", async (e) => {
   const busyLabel = BUSY_ACTIONS[action];
   if (busyLabel) setBusy(btn, true, busyLabel);
   try {
+    if (action === "toggle-pur-menu") {
+      // 开 / 收切换：同一个按钮再点一次就收起来
+      if (state.purMenuId !== null && Number(state.purMenuId) === Number(id)) closePurMenu();
+      else openPurMenu(btn);
+      return;
+    }
     if (action === "confirm-del") {
       state.pending = null;
       const path = { member: "members", family: "families", carry: "carry-items", shopping: "shopping-items", purchase: "purchases" }[kind];
@@ -2148,6 +2287,7 @@ $("#content").addEventListener("click", async (e) => {
     } else if (action === "del-member" || action === "del-family" || action === "del-carry" || action === "del-shop" || action === "del-purchase") {
       // 点「删除」先进行内确认态：同样是纯前端切换
       state.pending = { kind, id: Number(id) };
+      state.purMenuId = null; // 菜单收起，本行改画「确认删除 / 取消」
       if (paintCurrentTab()) return;
     } else if (action === "del-log") {
       const ok = await withAdmin("删除这条操作日志", async (pw) => {
@@ -2225,12 +2365,88 @@ clearFields("mem-name-" + fid, "mem-note-" + fid);
     } else if (action === "add-shop") {
       const name = $("#shop-name").value.trim();
       if (!name) return toast("请输入采购项名称");
+      // 先在前端拦一次同名：省一趟往返，提示也更即时（后端同样会校验，防并发重复提交）
+      const dup = (state.shoppingList || []).find((x) => String(x.name).trim() === name);
+      if (dup) {
+        toast("清单里已经有「" + name + "」了，不能重复添加");
+        const el = $("#shop-name");
+        if (el) el.select();
+        return;
+      }
       await api("/shopping-items", {
         method: "POST",
         body: { name, quantity: $("#shop-qty").value.trim(), unit: $("#shop-unit").value.trim() },
       });
       clearFields("shop-name", "shop-qty", "shop-unit");
-} else if (action === "claim-shop") {
+    } else if (action === "edit-shop") {
+      // 纯前端切换：只重画当前页签，不重新拉数据
+      state.editingShop = Number(id);
+      state.editingPurchase = null;
+      if (paintCurrentTab()) {
+        const el = $("#shop-edit-qty-" + id);
+        if (el) el.focus();
+        return;
+      }
+    } else if (action === "cancel-shop-edit") {
+      state.editingShop = null;
+      if (paintCurrentTab()) return;
+    } else if (action === "save-shop-edit") {
+      const qtyEl = $("#shop-edit-qty-" + id), unitEl = $("#shop-edit-unit-" + id);
+      if (!qtyEl || !unitEl) return;
+      const quantity = qtyEl.value.trim(), unit = unitEl.value.trim();
+      await api("/shopping-items/" + id, { method: "PUT", body: { quantity, unit } });
+      // 就地更新缓存再重画：不整页重建，列表不会闪
+      // （采购记录页的候选框用的是另一份 shopItems 缓存，同样补上，免得切过去还显示旧的数量）
+      [state.shoppingList, state.shopItems].forEach((list) => {
+        const it = (list || []).find((x) => Number(x.id) === Number(id));
+        if (it) {
+          it.quantity = quantity;
+          it.unit = unit;
+        }
+      });
+      state.editingShop = null;
+      if (paintCurrentTab()) {
+        toast("已更新数量 / 单位");
+        return;
+      }
+    } else if (action === "edit-purchase") {
+      state.editingPurchase = Number(id);
+      state.editingShop = null;
+      state.purMenuId = null;
+      if (paintCurrentTab()) {
+        const el = $("#pur-edit-amount-" + id);
+        if (el) {
+          el.focus();
+          el.select();
+        }
+        return;
+      }
+    } else if (action === "cancel-purchase-edit") {
+      state.editingPurchase = null;
+      if (paintCurrentTab()) return;
+    } else if (action === "save-purchase-amount") {
+      const el = $("#pur-edit-amount-" + id);
+      if (!el) return;
+      // 容忍「¥1,200」这类写法：去掉货币符号、千分位与空白再解析
+      const amount = Number(String(el.value).replace(/[,\s¥￥]/g, ""));
+      if (!Number.isFinite(amount) || amount <= 0) return toast("请输入大于 0 的金额");
+      const rec = (state.purchases || []).find((x) => Number(x.id) === Number(id));
+      if (rec && Number(rec.family_id) !== Number(state.familyId)) return toast("只能修改自家登记的采购金额");
+      await api("/purchases/" + id, { method: "PUT", body: { amount } });
+      const delta = rec ? amount - (Number(rec.amount) || 0) : 0;
+      if (rec) rec.amount = amount;
+      // 概览的「总花费」走的是另一份缓存，先按差额补上，并标记该页签需重新取数，
+      // 免得切回概览时还看到旧的总花费
+      if (state.overview && state.overview.total_amount !== undefined) {
+        state.overview.total_amount = (Number(state.overview.total_amount) || 0) + delta;
+      }
+      state.tabAt.overview = 0;
+      state.editingPurchase = null;
+      if (paintCurrentTab()) {
+        toast("金额已更新为 " + money(amount));
+        return;
+      }
+    } else if (action === "claim-shop") {
       if (!state.familyId) return toast("请先选择你所属的家庭");
       // 接任务 / 取消接任务不发 toast：行内状态（接单家庭标记 + 按钮）本身就是最直接的反馈
       const r = await api("/shopping-items/" + id, { method: "PUT", body: { claim: true } });
