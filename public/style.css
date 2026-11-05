@@ -71,14 +71,29 @@
      不能先封装成 --ring-flow 这种令牌——自定义属性在计算值阶段就会把 var(--ga) 替换掉，
      一旦定义在 :root，所有卡片继承到的都是 0deg 的静态渐变，元素上的 --ga 动画就再也影响不到它。
      所以这里只放颜色，角度 from var(--ga) 留在每条 background 里就地引用。 */
-  --ring-1: rgba(109, 91, 246, 0.34);
-  --ring-2: rgba(22, 184, 212, 0.92);
-  --ring-3: rgba(214, 60, 160, 0.86);
+  /* 悬停流光的三段色标。--ring-1 不再是「很淡的紫」：它占了 0~40deg 与 140~360deg
+     两段，太淡会让整圈出现一大片暗边，看起来像边框没画全。 */
+  --ring-1: rgba(109, 91, 246, 0.62);
+  --ring-2: rgba(22, 184, 212, 0.95);
+  --ring-3: rgba(214, 60, 160, 0.9);
   --ring-stops: var(--ring-1) 0deg, var(--ring-2) 40deg, var(--ring-3) 84deg,
     var(--ring-1) 140deg, var(--ring-1) 360deg;
 
+  /* 卡片边框的两态色标：
+     - --ring-idle：常态。整条 conic 只有一个颜色，等于一条实色边 —— 也就是说
+       「没被指着的卡片不显示流光」，但边框本身依然清楚（1px，见卡片基座）。
+     - --ring-stops：悬停态。真正在转的彩色流光。
+     两者都是纯色标（不含 var(--ga)），可以直接作为自定义属性被卡片继承 / 覆盖；
+     旋转角度 from var(--ga) 必须留在各卡片的 background 里就地写，不能塞进令牌。 */
+  /* 浅色下 1px 紫边要压得住白卡片又不抢戏：0.3 几乎看不见，0.38 是实测的临界点 */
+  --edge: rgba(109, 91, 246, 0.38);
+  --ring-idle: var(--edge) 0deg, var(--edge) 360deg;
+  /* 悬停时打在卡片下方的一团品牌色辉光 */
+  --halo: rgba(109, 91, 246, 0.5);
+
   /* 光斑 / 网格 */
-  --spot: rgba(109, 91, 246, 0.11);
+  --spot: rgba(109, 91, 246, 0.17);
+  --spot-r: 320px;
   --card-glow: rgba(109, 91, 246, 0.028);
   --grid-line: rgba(15, 22, 48, 0.05);
 
@@ -160,7 +175,8 @@ html[data-theme="dark"] {
 
   --grad: linear-gradient(132deg, #5b4be0 0%, #7b3fe4 55%, #8f46e8 100%);
 
-  --spot: rgba(139, 124, 255, 0.16);
+  --spot: rgba(139, 124, 255, 0.24);
+  --spot-r: 320px;
   --card-glow: rgba(120, 102, 255, 0.11);
   --grid-line: rgba(255, 255, 255, 0.045);
 
@@ -187,9 +203,13 @@ html[data-theme="dark"] {
   --head-bg-strong: rgba(9, 12, 24, 0.94);
   --head-shadow: 0 10px 30px -22px rgba(0, 0, 0, 0.9);
 
-  --ring-1: rgba(139, 124, 255, 0.42);
+  --ring-1: rgba(139, 124, 255, 0.85);
   --ring-2: rgba(34, 211, 238, 1);
-  --ring-3: rgba(214, 60, 160, 0.95);
+  --ring-3: rgba(214, 60, 160, 0.98);
+  /* 深色下常态边框用低亮度浅紫，1px 也不刺眼；悬停辉光比浅色更强 */
+  --edge: rgba(139, 124, 255, 0.34);
+  --ring-idle: var(--edge) 0deg, var(--edge) 360deg;
+  --halo: rgba(139, 124, 255, 0.62);
 
   --sh-1: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 18px 40px -26px rgba(0, 0, 0, 0.9);
   --sh-2: 0 30px 70px -30px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 255, 255, 0.04);
@@ -609,9 +629,10 @@ html[data-theme="dark"] .bg-vignette {
     var(--side-active-sh);
 }
 
-/* 当前项左侧的发光竖条 */
+/* 当前项左侧的发光竖条。挂了滑块时（见下）竖条跟着滑块一起滑，不再由按钮自己画 */
 .nav-item.active::after,
-.tab.active::after {
+.tab.active::after,
+.nav-glider::after {
   content: "";
   position: absolute;
   left: -12px;
@@ -622,6 +643,65 @@ html[data-theme="dark"] .bg-vignette {
   border-radius: 0 3px 3px 0;
   background: linear-gradient(180deg, #a78bfa, #22d3ee);
   box-shadow: 0 0 14px 1px rgba(139, 124, 255, 0.9);
+}
+
+/* ---------- 页签切换的滑动高亮 ---------- */
+/* 为什么需要这个独立元素：页签栏每次切换都由 renderChrome() 整体重建，新按钮一插进 DOM
+   就已经是「选中」的最终样式，transition 没有起点，所以原来的切换是硬跳的。
+   滑块是页签栏里唯一不被重建的节点，切换时只改它的 transform，浏览器就能把它从旧位置
+   连续补间到新位置。它兼做选中项的背景（按钮自己不再画渐变底），否则滑块滑到一半时
+   旧按钮还顶着渐变，会出现两个高亮块同时在动。 */
+.nav-glider {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  width: 0;
+  height: 0;
+  border-radius: 11px;
+  background: var(--side-active-bg);
+  box-shadow:
+    inset 0 0 0 1px var(--side-active-ring),
+    var(--side-active-sh);
+  opacity: 0;
+  pointer-events: none;
+  /* 只补间位置与尺寸；opacity 单独给一个更短的时长，首次落位才不至于「淡入半秒」 */
+  transition:
+    transform 0.38s var(--ease),
+    width 0.38s var(--ease),
+    height 0.38s var(--ease),
+    opacity 0.2s var(--ease);
+}
+
+/* 滑块在按钮之下，按钮必须保持透明才看得见它 */
+.side-nav.has-glider .tab {
+  z-index: 1;
+}
+
+.side-nav.has-glider .tab.active {
+  background: transparent;
+  box-shadow: none;
+}
+
+/* 悬停灰底不要盖住滑块；选中项自身也不铺灰 */
+.side-nav.has-glider .tab:hover:not(.active) {
+  background: var(--side-hover);
+}
+
+.side-nav.has-glider .tab.active::after {
+  display: none;
+}
+
+/* 图标随选中「弹」一下：页签是重建的，所以每次切到该项都会播一次，给点击一个落点 */
+.side-nav.has-glider .tab.active::before {
+  animation: tab-icon-pop 0.42s var(--ease-spring);
+}
+
+@keyframes tab-icon-pop {
+  from {
+    transform: scale(0.78);
+    opacity: 0.45;
+  }
 }
 
 .nav-label {
@@ -1086,6 +1166,15 @@ input[type="number"] {
 .modal-card {
   position: relative;
   isolation: isolate;
+  /* 两态边框的开关：
+     --card-ring 常态指向 --ring-idle（整条 conic 只有一个浅紫色 = 一条 1px 实色边），
+     于是「没被指着的卡片不显示流光」；只有被 hover 的那张卡片把它换成彩色色标
+     --ring-stops，流光才出现。切换变量而不是切换 background，一方面不用在 :hover 里
+     重写整串背景（否则会盖掉 .readonly / .done 的不同表面色），另一方面背景层数不变，
+     没有任何重排。
+     边框厚度常驻 1px（悬停时也是 1px），所以「亮起来」时内容不会位移。 */
+  --card-ring: var(--ring-idle);
+  border: 1px solid transparent;
 }
 
 /* 说明：这里曾经用「::before + padding:1px + mask-composite:exclude」挖出一条 1px 描边，
@@ -1098,7 +1187,8 @@ input[type="number"] {
   to { --ga: 360deg; }
 }
 
-/* 跟随指针的柔光斑（--mx / --my 由 index.html 里的增强脚本写入） */
+/* 跟随指针的柔光斑（--mx / --my 由 index.html 里的增强脚本写入）。
+   只做「光」，不做「边」：边由卡片的 --card-ring 负责。 */
 .section::after,
 .card::after,
 .proj-card::after,
@@ -1112,12 +1202,12 @@ input[type="number"] {
   z-index: 1;
   border-radius: inherit;
   background: radial-gradient(
-    260px circle at var(--mx, 50%) var(--my, 0%),
+    var(--spot-r, 320px) circle at var(--mx, 50%) var(--my, 0%),
     var(--spot),
-    transparent 68%
+    transparent 72%
   );
   opacity: 0;
-  transition: opacity 0.4s var(--ease);
+  transition: opacity 0.24s var(--ease);
   pointer-events: none;
 }
 
@@ -1136,16 +1226,15 @@ input[type="number"] {
   background:
     radial-gradient(70% 62% at 100% 0%, var(--card-glow), transparent 66%) padding-box,
     linear-gradient(var(--surface), var(--surface)) padding-box,
-    conic-gradient(from var(--ga), var(--ring-stops)) border-box;
-  border: 1px solid transparent;
+    conic-gradient(from var(--ga), var(--card-ring)) border-box;
   border-radius: var(--r-lg);
   padding: 20px 22px;
   margin-bottom: 16px;
   box-shadow: var(--sh-1);
   /* transition 里不能留 background：它会被 --ga 的逐帧动画拖成离散跳变 */
   transition: box-shadow 0.3s var(--ease);
-  animation: ring-spin 9s linear infinite;
-  /* 流光默认暂停（静态渐变边框），只有鼠标悬停的那张卡片才开始转 */
+  animation: ring-spin 6s linear infinite;
+  /* 流光默认暂停：常态根本没有彩色可转，暂停着等悬停再把 --card-ring 换成彩色 */
   animation-play-state: paused;
 }
 
@@ -1153,13 +1242,15 @@ input[type="number"] {
   background:
     radial-gradient(70% 62% at 100% 0%, var(--card-glow), transparent 66%) padding-box,
     linear-gradient(var(--surface-2), var(--surface-2)) padding-box,
-    conic-gradient(from var(--ga), var(--ring-stops)) border-box;
+    conic-gradient(from var(--ga), var(--card-ring)) border-box;
 }
 
-/* 悬停只提亮投影：边框已经是渐变，不能再改 border-color，否则流光会被盖成纯色。
-   悬停同时解冻流光：只有被指着的这张卡片播放流光动画。 */
+/* 悬停：把边框色标切成彩色流光 + 解冻旋转 + 叠一层外辉光。
+   边框厚度不变（始终 2px），只提亮投影与边缘，所以不会位移。
+   不给 border-color 赋值：真实边框必须保持透明，彩色是 border-box 那层背景。 */
 .section:hover {
-  box-shadow: var(--sh-2);
+  --card-ring: var(--ring-stops);
+  box-shadow: var(--sh-2), 0 0 34px -8px var(--halo), 0 20px 48px -26px var(--halo);
   animation-play-state: running;
 }
 
@@ -1696,19 +1787,19 @@ html[data-theme="dark"] .pill.done {
   padding: 18px 20px 16px;
   border-radius: var(--r-lg);
   /* 常驻渐变细边：第一层铺表面色（只铺到 padding-box），第二层渐变铺满 border-box，
-     于是边框那 1px 成了流动的渐变；border 透明 + 真实边框路径 = 圆角平滑无毛刺。
-     不能用 ::before + mask 的写法，圆角处只剩 1px 抗锯齿像素，会出锯齿。 */
+     于是边框那 2px 成了流动的渐变；border 透明 + 真实边框路径 = 圆角平滑无毛刺。
+     不能用 ::before + mask 的写法，圆角处只剩抗锯齿像素，会出锯齿。
+     常态色标是中性色（--card-ring），悬停才换成彩色流光。 */
   background:
     linear-gradient(var(--surface), var(--surface)) padding-box,
-    conic-gradient(from var(--ga), var(--ring-stops)) border-box;
-  border: 1px solid transparent;
+    conic-gradient(from var(--ga), var(--card-ring)) border-box;
   box-shadow: var(--sh-1);
   overflow: hidden;
   /* 网格项允许收缩：项目名里若有超长不可断的词，1fr 轨道会按 min-content 撑破视口，
      连带把 fixed 定位的顶部条、主题按钮推出屏幕外（窄屏尤为明显）。 */
   min-width: 0;
   transition: box-shadow 0.26s var(--ease);
-  animation: ring-spin 9s linear infinite;
+  animation: ring-spin 6s linear infinite;
   /* 流光默认暂停，悬停才转（同 .section） */
   animation-play-state: paused;
 }
@@ -1716,14 +1807,15 @@ html[data-theme="dark"] .pill.done {
 /* 悬停只改光与影，不做位移：卡片在网格里上下移动会让指针落到空隙上，
    触发 hover / 离开的反复切换，看起来就是「抖动」。 */
 .proj-card:hover {
-  box-shadow: var(--sh-2);
+  --card-ring: var(--ring-stops);
+  box-shadow: var(--sh-2), 0 0 34px -8px var(--halo), 0 22px 52px -28px var(--halo);
   animation-play-state: running;
 }
 
 .proj-card.done {
   background:
     linear-gradient(var(--surface-2), var(--surface-2)) padding-box,
-    conic-gradient(from var(--ga), var(--ring-stops)) border-box;
+    conic-gradient(from var(--ga), var(--card-ring)) border-box;
 }
 
 .proj-card .main {
@@ -1815,8 +1907,7 @@ html[data-theme="dark"] .pill.done {
   border-radius: var(--r-lg);
   background:
     linear-gradient(var(--surface-2), var(--surface-2)) padding-box,
-    conic-gradient(from var(--ga), var(--ring-stops)) border-box;
-  border: 1px solid transparent;
+    conic-gradient(from var(--ga), var(--card-ring)) border-box;
   color: var(--muted);
   font-family: inherit;
   font-size: 13px;
@@ -1824,14 +1915,15 @@ html[data-theme="dark"] .pill.done {
   cursor: pointer;
   overflow: hidden;
   transition: color 0.25s var(--ease), box-shadow 0.25s var(--ease);
-  animation: ring-spin 9s linear infinite;
+  animation: ring-spin 6s linear infinite;
   /* 流光默认暂停，悬停才转（同 .section） */
   animation-play-state: paused;
 }
 
 .proj-add:hover {
+  --card-ring: var(--ring-stops);
   color: var(--brand-ink);
-  box-shadow: var(--sh-2);
+  box-shadow: var(--sh-2), 0 0 34px -8px var(--halo), 0 22px 52px -28px var(--halo);
   animation-play-state: running;
 }
 
@@ -1888,19 +1980,19 @@ html[data-theme="dark"] .pill.done {
   background:
     radial-gradient(78% 70% at 100% 0%, var(--card-glow), transparent 64%) padding-box,
     linear-gradient(var(--surface), var(--surface)) padding-box,
-    conic-gradient(from var(--ga), var(--ring-stops)) border-box;
-  border: 1px solid transparent;
+    conic-gradient(from var(--ga), var(--card-ring)) border-box;
   box-shadow: var(--sh-1);
   overflow: hidden;
   transition: box-shadow 0.26s var(--ease);
-  animation: ring-spin 9s linear infinite;
+  animation: ring-spin 6s linear infinite;
   /* 流光默认暂停，悬停才转（同 .section） */
   animation-play-state: paused;
 }
 
 /* 顶部那条 2px 渐变细线已移除；悬停只提亮投影，不做位移 */
 .card:hover {
-  box-shadow: var(--sh-2);
+  --card-ring: var(--ring-stops);
+  box-shadow: var(--sh-2), 0 0 32px -8px var(--halo), 0 20px 46px -26px var(--halo);
   animation-play-state: running;
 }
 
@@ -2333,10 +2425,9 @@ html.modal-open .bg-aurora * {
   border-radius: var(--r-xl);
   background:
     linear-gradient(var(--modal-surface), var(--modal-surface)) padding-box,
-    conic-gradient(from var(--ga), var(--ring-stops)) border-box;
-  border: 1px solid transparent;
+    conic-gradient(from var(--ga), var(--card-ring)) border-box;
   box-shadow: 0 46px 90px -34px rgba(6, 9, 20, 0.72), 0 0 0 1px rgba(255, 255, 255, 0.04);
-  animation: pop-in 0.36s var(--ease-spring) both, ring-spin 9s linear infinite;
+  animation: pop-in 0.36s var(--ease-spring) both, ring-spin 6s linear infinite;
   /* pop-in 始终播放；流光默认暂停，悬停才转（多值与 animation 列表一一对应） */
   animation-play-state: running, paused;
   overflow-x: hidden;
@@ -2346,6 +2437,8 @@ html.modal-open .bg-aurora * {
 }
 
 .modal-card:hover {
+  --card-ring: var(--ring-stops);
+  box-shadow: 0 52px 104px -34px rgba(6, 9, 20, 0.78), 0 0 44px -6px var(--halo);
   animation-play-state: running, running;
 }
 
@@ -2533,16 +2626,17 @@ html.modal-open .bg-aurora * {
   border-radius: var(--r-xl);
   background:
     linear-gradient(var(--surface), var(--surface)) padding-box,
-    conic-gradient(from var(--ga), var(--ring-stops)) border-box;
-  border: 1px solid transparent;
+    conic-gradient(from var(--ga), var(--card-ring)) border-box;
   box-shadow: var(--sh-2);
   text-align: center;
-  animation: pop-in 0.5s var(--ease-spring) both, ring-spin 9s linear infinite;
+  animation: pop-in 0.5s var(--ease-spring) both, ring-spin 6s linear infinite;
   /* pop-in 始终播放；流光默认暂停，悬停才转（多值与 animation 列表一一对应） */
   animation-play-state: running, paused;
 }
 
 .panel:hover {
+  --card-ring: var(--ring-stops);
+  box-shadow: var(--sh-2), 0 0 38px -8px var(--halo), 0 26px 60px -28px var(--halo);
   animation-play-state: running, running;
 }
 
@@ -2551,7 +2645,7 @@ html.modal-open .bg-aurora * {
 html[data-theme="dark"] .panel {
   background:
     linear-gradient(#182034, #182034) padding-box,
-    conic-gradient(from var(--ga), var(--ring-stops)) border-box;
+    conic-gradient(from var(--ga), var(--card-ring)) border-box;
 }
 
 .panel .brand-mark {
@@ -2858,9 +2952,18 @@ html[data-theme="dark"] .theme-icon--moon {
     letter-spacing: 0.01em;
   }
 
+  /* 底部横条是横向排列，竖排的发光条没有意义：它挂在滑块上，用 left:-12px 定位，
+     横排时会跑到滑块左边，正好压在左侧邻项的文字上（截图里的那条紫竖线）。
+     窄屏统一只保留胶囊高亮，竖线连同滑块自身的一起关掉。 */
   .nav-item.active::after,
-  .tab.active::after {
+  .tab.active::after,
+  .nav-glider::after {
     display: none;
+  }
+
+  /* 滑块的圆角跟按钮对齐，否则滑块比按钮圆角大 1px，胶囊边缘会啃掉一点按钮底色 */
+  .nav-glider {
+    border-radius: 10px;
   }
 
   .nav-item.active,

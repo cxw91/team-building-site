@@ -887,18 +887,69 @@ function renderChrome() {
   $("#whoami").textContent = "当前：" + familyName(state.familyId);
   renderFamilyMenu();
   $("#familyMenu").classList.add("hidden"); // 界面重建时先收起下拉
-  $("#tabs").innerHTML = TABS.map(
-    (t) =>
-      `<button class="tab${t.key === state.tab ? " active" : ""}" data-tab="${t.key}">${t.label}` +
-      (t.key === "logs" && state.newLogs
-        ? `<span class="badge" aria-label="${state.newLogs} 条新日志">${state.newLogs}</span>`
-        : "") +
-      `</button>`
-  ).join("");
-  $("#tabs")
+  const nav = $("#tabs");
+  // 页签按钮每次切换都会重建，但滑块必须留下来：只有同一个节点连续改 transform，
+  // 浏览器才会把「旧位置 → 新位置」补成一段滑动，而不是瞬间跳过去。
+  let glider = nav.querySelector(".nav-glider");
+  if (!glider) {
+    glider = document.createElement("span");
+    glider.className = "nav-glider";
+    glider.setAttribute("aria-hidden", "true");
+    glider.dataset.fresh = "1"; // 首次落位不做动画，免得从左上角飞出来
+  }
+  nav.querySelectorAll(".tab").forEach((btn) => btn.remove());
+  nav.insertAdjacentHTML(
+    "beforeend",
+    TABS.map(
+      (t) =>
+        `<button class="tab${t.key === state.tab ? " active" : ""}" data-tab="${t.key}">${t.label}` +
+        (t.key === "logs" && state.newLogs
+          ? `<span class="badge" aria-label="${state.newLogs} 条新日志">${state.newLogs}</span>`
+          : "") +
+        `</button>`
+    ).join("")
+  );
+  nav.insertBefore(glider, nav.firstChild);
+  nav.classList.add("has-glider");
+  nav
     .querySelectorAll(".tab")
     .forEach((btn) => btn.addEventListener("click", () => openTab(btn.dataset.tab)));
+  const animate = glider.dataset.fresh !== "1";
+  delete glider.dataset.fresh;
+  syncNavGlider(animate);
 }
+
+// 把高亮滑块对到当前页签。offsetLeft / offsetTop 是相对 .side-nav 内边距的位移，
+// 纵向侧栏与窄屏底部横条都能直接用，不需要按方向写死某一轴为 0
+// （写 0 会忽略导航列表自己的 padding，滑块整体左偏 12px）。
+function syncNavGlider(animate = true) {
+  const nav = $("#tabs");
+  const glider = nav && nav.querySelector(".nav-glider");
+  const active = nav && nav.querySelector(".tab.active");
+  if (!glider || !active) return;
+  // 视图隐藏（display:none）时量到的全是 0，会先把滑块压到左上角，等回到页面再滑一段飞进来
+  if (!active.offsetWidth) return;
+  // 先关掉过渡量一次位置再恢复：首次落位、以及断点切换（纵向↔横向）时不该播滑动
+  if (!animate) glider.style.transition = "none";
+  glider.style.width = active.offsetWidth + "px";
+  glider.style.height = active.offsetHeight + "px";
+  glider.style.transform = `translate3d(${active.offsetLeft}px, ${active.offsetTop}px, 0)`;
+  glider.style.opacity = "1";
+  if (!animate) {
+    void glider.offsetWidth; // 强制结算一次，确保恢复过渡后不会补间刚才这一步
+    glider.style.transition = "";
+  }
+}
+
+// 窗口跨过断点时侧栏会在「左侧纵列」与「底部横条」之间切换，位移轴跟着变，需要重新落位
+let navGliderRaf = 0;
+window.addEventListener("resize", () => {
+  if (navGliderRaf) return;
+  navGliderRaf = requestAnimationFrame(() => {
+    navGliderRaf = 0;
+    syncNavGlider(false);
+  });
+});
 
 // 切页签：先切高亮，再用缓存把新页签立刻画出来（网络延迟也不至于空等），随后后台刷新一次；
 // 再也没有原来的「showApp() + render()」两次整页渲染，请求数直接减半。
