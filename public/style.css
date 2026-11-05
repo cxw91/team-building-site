@@ -1411,6 +1411,62 @@ input[type="number"] {
   background: var(--bar-done);
 }
 
+/* ---------- 任务奖金（概览图表 + 结算明细共用） ---------- */
+.bonus-sum {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+.bonus-sum b {
+  color: var(--text);
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+/* 奖金条用青色（--accent），与「任务接单情况」的绿/紫明确区分 */
+.task-seg.bonus {
+  background: var(--accent);
+}
+
+.task-dot.bonus {
+  background: var(--accent);
+}
+
+.task-dot.in {
+  background: var(--muted);
+}
+
+/* 净收益：空心点，表示「两者相减的结果」而不是某一类数量 */
+.task-dot.net {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--line-strong);
+}
+
+.task-tip-line b.net-pos {
+  color: var(--ok);
+}
+
+.task-tip-line b.net-neg {
+  color: var(--danger);
+}
+
+/* 金额比数量宽：奖金行的数值列要放宽，否则 ¥123.45 会被挤成两行 */
+.task-row.bonus-row {
+  grid-template-columns: 76px minmax(0, 1fr) 74px;
+}
+
+.task-row.bonus-row .task-count {
+  white-space: nowrap;
+}
+
 .task-dot.wait {
   background: var(--brand);
   opacity: 0.78;
@@ -1914,6 +1970,7 @@ html[data-theme="dark"] .card .num {
 .budget-none {
   color: var(--muted);
   font-size: 12px;
+  padding-right: 10px;
 }
 
 /* 「预算与花费进度」面板右侧两处内容（设置 / 修改预算、预算：无 或百分比）对齐到同一条右边缘。
@@ -3127,6 +3184,15 @@ html[data-theme="dark"] .theme-icon--moon {
     font-size: 12.5px;
   }
 
+  /* 奖金行显示的是金额（¥123.45），数值列要比纯数量宽一些 */
+  .task-row.bonus-row {
+    grid-template-columns: 62px minmax(0, 1fr) 66px;
+  }
+
+  .task-row.bonus-row .task-count {
+    font-size: 12.5px;
+  }
+
   .proj-card {
     padding: 15px 15px 13px;
     gap: 12px;
@@ -3163,6 +3229,12 @@ html[data-theme="dark"] .theme-icon--moon {
 
   table {
     font-size: 12px;
+  }
+
+  /* 设置了任务奖金时结算表是 5 列，窄屏允许表头折行，避免把表格撑出容器 */
+  .settle-table thead th {
+    white-space: normal;
+    line-height: 1.25;
   }
 
   thead th,

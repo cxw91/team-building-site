@@ -3,6 +3,12 @@ const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) =>
   String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const money = (n) => "¥" + (Math.round((Number(n) || 0) * 100) / 100).toFixed(2);
+// 带符号的金额：正数 +¥1.50、负数 −¥1.50、0 显示 ¥0.00，用于差额 / 净收益这类「可正可负」的列
+const signedMoney = (n) => {
+  const v = Math.round((Number(n) || 0) * 100) / 100;
+  if (Math.abs(v) < 0.005) return money(0);
+  return (v > 0 ? "+" : "−") + money(Math.abs(v));
+};
 // 成员姓名一次可填多个：用逗号（中英文「,」「，」）分隔；同时兼容「、」等旧写法，避免历史习惯报错
 const splitNames = (s) => String(s || "").split(/[,，、;；/|\s]+/).map((x) => x.trim()).filter(Boolean);
 
@@ -49,6 +55,7 @@ lastLogId: 0,
   editingFamily: null,  // 正在重命名的家庭 id
 editingProject: null, // 正在改名的项目 id
   editingBudget: false, // 概览里是否正在编辑项目预算
+  editingBonus: false, // 概览里是否正在编辑任务奖金
   overview: null,       // 概览接口最近一次的返回，供预算面板局部重画（不重新拉数据）
   projectStatus: "",    // 当前项目状态：进行中 / 已结束
   members: [],          // 成员页缓存：进入/退出编辑态、行内确认删除时就地重画，不重新拉接口
@@ -1170,6 +1177,92 @@ function renderBudgetPanel({ focusInput = false } = {}) {
   return true;
 }
 
+// ---------- 任务奖金 ----------
+// 口径：奖金池由各家均摊出资，再按「各自完成的采购任务数」分回去。分配结果直接取自结算接口，
+// 所以概览图表与结算页永远一致（后端按「分」精算，各家获得之和恰好等于奖金池）。
+function bonusPanelHtml() {
+  const o = state.overview || {};
+  const s = state.settlement || {};
+  const pool = Number(o.bonus) || 0;
+  const has = pool > 0;
+  const count = Number(s.family_count) || (state.families || []).length || 0;
+  const per = count ? pool / count : 0;
+  const active = !!s.bonus_active;
+  const head = `<div class="section-head">
+        <span class="title">任务奖金</span>
+        ${state.editingBonus ? "" : `<button class="link" data-action="edit-bonus">${has ? "修改奖金" : "设置奖金"}</button>`}
+      </div>`;
+  if (state.editingBonus) {
+    return `${head}
+      <div class="form-row">
+        <input id="bonus-input" type="number" min="0" step="0.01" inputmode="decimal" placeholder="奖金金额（元）" value="${has ? pool : ""}" />
+        <button class="primary shrink" data-action="save-bonus">保存</button>
+        <button class="ghost shrink" data-action="cancel-bonus">取消</button>
+      </div>
+      <p class="hint" style="margin:8px 0 0">填 0 可取消奖金设置；设置 / 修改任务奖金需要本口令的管理员密码。</p>`;
+  }
+  if (!has) {
+    return `${head}
+      <div class="budget-line"><span>任务奖金 <b>未设置</b></span><span class="budget-none">奖金：无</span></div>
+      <p class="hint" style="margin:6px 0 0">设一个奖金池，各家均摊出资，再按各自完成的采购任务数分回去。</p>`;
+  }
+  if (!active) {
+    // 奖金已设置但还没有任何「已购」任务：不分配，结算口径与没有奖金时完全一致
+    return `${head}
+      <div class="budget-line"><span>奖金池 <b>${money(pool)}</b> · ${count} 家各出 <b>${money(per)}</b></span><span class="budget-none">未生效</span></div>
+      <p class="hint" style="margin:6px 0 0">还没有已完成（已购）的采购任务，奖金暂不分配、也不计入结算；等有任务采购完成后会自动按完成数分给各家。</p>`;
+  }
+  const rows = (s.detail || [])
+    .slice()
+    .sort((a, b) => (Number(b.bonus_out) || 0) - (Number(a.bonus_out) || 0) || (Number(b.done) || 0) - (Number(a.done) || 0));
+  const max = Math.max(1, ...rows.map((d) => Number(d.bonus_out) || 0)); // 条宽按拿得最多的那家归一化
+  return `${head}
+    <div class="bonus-sum">
+      <span>奖金池 <b>${money(pool)}</b></span>
+      <span>${count} 家各出 <b>${money(per)}</b></span>
+      <span>已完成 <b>${s.bonus_total_done || 0}</b> 项任务</span>
+    </div>
+    ${rows.map((d) => bonusRowHtml(d, max)).join("")}
+    <p class="hint" style="margin:10px 0 0">净收益 = 获得奖金 − 出资，已计入结算页的应摊与转账建议。</p>`;
+}
+
+// 单行：家名 + 获得奖金占比条 + 金额；悬停看「完成数 / 出资 / 获得 / 净收益」。
+// 复用 .task-row 的跟随鼠标气泡，交互与「任务接单情况」一致。
+function bonusRowHtml(d, max) {
+  const out = Number(d.bonus_out) || 0;
+  const inn = Number(d.bonus_in) || 0;
+  const net = Number(d.bonus_net) || 0;
+  const done = Number(d.done) || 0;
+  const pct = ((out / max) * 100).toFixed(2);
+  const netTxt = signedMoney(net);
+  const netCls = net > 0.004 ? "net-pos" : net < -0.004 ? "net-neg" : "";
+  return `
+      <div class="task-row bonus-row" tabindex="0" aria-label="${esc(d.name)}：完成 ${done} 项，获得奖金 ${money(out)}，出资 ${money(inn)}，净收益 ${netTxt}">
+        <span class="task-fam">${esc(d.name)}</span>
+        <div class="task-track"><span class="task-seg bonus" style="width:${pct}%"></span></div>
+        <span class="task-count">${money(out)}</span>
+        <div class="task-tip" aria-hidden="true">
+          <div class="task-tip-head"><span class="task-tip-name">${esc(d.name)}</span><span class="task-tip-sum">完成 ${done} 项</span></div>
+          <div class="task-tip-line"><span class="task-dot bonus"></span>获得奖金<b>${money(out)}</b></div>
+          <div class="task-tip-line"><span class="task-dot in"></span>均摊出资<b>${money(inn)}</b></div>
+          <div class="task-tip-line"><span class="task-dot net"></span>净收益<b class="${netCls}">${netTxt}</b></div>
+        </div>
+      </div>`;
+}
+
+// 只重画「任务奖金」这一块（切换编辑态时用，不重新拉数据）
+function renderBonusPanel({ focusInput = false } = {}) {
+  const el = $("#bonusPanel");
+  if (!el) return false;
+  el.innerHTML = bonusPanelHtml();
+  applyReadonly();
+  if (focusInput) {
+    const i = $("#bonus-input");
+    if (i) setTimeout(() => i.focus({ preventScroll: true }), 0);
+  }
+  return true;
+}
+
 // ---------- 概览 ----------
 async function fetchOverview() {
   // 概览要用的四个接口互不依赖，并发拉取，别让网络延迟叠成四倍
@@ -1203,6 +1296,7 @@ function paintOverview() {
       <div class="card"><div class="num">${o.shopping_done}/${o.shopping_total}</div><div class="lbl">采购已购</div></div>
     </div>
     <div class="section budget-summary budget-panel" id="budgetPanel">${budgetPanelHtml(o)}</div>
+    <div class="section bonus-panel" id="bonusPanel">${bonusPanelHtml()}</div>
     ${taskPanelHtml()}
   `;
 }
@@ -1718,15 +1812,25 @@ function paintSettlement() {
   const s = state.settlement || {};
   const detail = s.detail || [];
   const transfers = s.transfers || [];
+  const bonus = Number(s.bonus) || 0;
+  const bonusActive = !!s.bonus_active;
+  // 只要项目设置了任务奖金池（含尚未生效的情况），「每家结算」就补一列「任务奖金」（= 该家获得的奖金）。
+  // 放在「应摊」之后，让「已垫付 + 任务奖金 − 应摊 = 差额」这条算式在同一行里直接可读。
+  const showBonusCol = bonus > 0;
+  // 奖金明细按「获得」从多到少排，拿得多的排前面
+  const bonusRows = detail
+    .slice()
+    .sort((a, b) => (Number(b.bonus_out) || 0) - (Number(a.bonus_out) || 0) || (Number(b.done) || 0) - (Number(a.done) || 0));
   $("#content").innerHTML = `
 <div class="cards">
       <div class="card"><div class="num">${money(s.total)}</div><div class="lbl">总花费</div></div>
-      <div class="card"><div class="num">${money(s.share)}</div><div class="lbl">每家应摊（${s.family_count} 家均分）</div></div>
+      <div class="card"><div class="num">${money(s.share)}</div><div class="lbl">每家应摊（${s.family_count} 家均分${bonusActive ? "，含奖金池" : ""}）</div></div>
+      ${bonus > 0 ? `<div class="card"><div class="num">${money(bonus)}</div><div class="lbl">任务奖金池${bonusActive ? `（已完成 ${s.bonus_total_done} 项）` : "（未生效）"}</div></div>` : ""}
     </div>
     <div class="section">
       <div class="section-head"><span class="title">每家结算</span><span class="hint">分摊口径：${esc(s.basis || "按家庭数均分")}</span></div>
-      <table>
-        <thead><tr><th>家庭</th><th class="r">已垫付</th><th class="r">应摊</th><th class="r">差额</th></tr></thead>
+      <table class="settle-table">
+        <thead><tr><th>家庭</th><th class="r">已垫付</th><th class="r">应摊</th>${showBonusCol ? '<th class="r">任务奖金</th>' : ""}<th class="r">差额</th></tr></thead>
         <tbody>
           ${detail
             .map(
@@ -1734,14 +1838,54 @@ function paintSettlement() {
                 <td>${esc(d.name)}</td>
                 <td class="r">${money(d.paid)}</td>
                 <td class="r">${money(d.share)}</td>
-                <td class="r ${d.balance > 0 ? "pos" : d.balance < 0 ? "neg" : ""}">${money(d.balance)}</td>
+                ${showBonusCol ? `<td class="r">${money(d.bonus_out)}</td>` : ""}
+                <td class="r ${d.balance > 0 ? "pos" : d.balance < 0 ? "neg" : ""}">${signedMoney(d.balance)}</td>
               </tr>`
             )
             .join("")}
         </tbody>
       </table>
-      <p class="hint" style="margin-top:10px">差额为正 = 该家庭多垫付、应收回；为负 = 应补付。</p>
+      <p class="hint" style="margin-top:10px">差额为正 = 该家庭多垫付、应收回；为负 = 应补付。${
+        bonusActive
+          ? `差额 = 已垫付 + 任务奖金 − 应摊；应摊已含奖金池出资（每家 ${money(s.bonus_contribution)}）。`
+          : bonus > 0
+            ? "奖金池尚未生效（还没有已完成的采购任务），「任务奖金」列暂按 0 计。"
+            : ""
+      }</p>
     </div>
+    ${
+      bonus > 0
+        ? `<div class="section">
+      <div class="section-head">
+        <span class="title">任务奖金</span>
+        <span class="hint">${
+          bonusActive
+            ? `奖金池 ${money(bonus)} · 每家出资 ${money(s.bonus_contribution)} · 按已完成采购数分配`
+            : `奖金池 ${money(bonus)} · 还没有已完成的采购任务，暂不分配`
+        }</span>
+      </div>
+      <table>
+        <thead><tr><th>家庭</th><th class="r">已完成</th><th class="r">出资</th><th class="r">获得</th><th class="r">净收益</th></tr></thead>
+        <tbody>
+          ${bonusRows
+            .map((d) => {
+              const net = Number(d.bonus_net) || 0;
+              const netTxt = signedMoney(net);
+              return `<tr>
+                <td>${esc(d.name)}</td>
+                <td class="r">${Number(d.done) || 0} 项</td>
+                <td class="r">${money(d.bonus_in)}</td>
+                <td class="r">${money(d.bonus_out)}</td>
+                <td class="r ${net > 0.004 ? "pos" : net < -0.004 ? "neg" : ""}">${netTxt}</td>
+              </tr>`;
+            })
+            .join("")}
+        </tbody>
+      </table>
+      <p class="hint" style="margin-top:10px">净收益 = 获得奖金 − 出资；出资计入上面的「应摊」，获得奖金计入「差额」。</p>
+    </div>`
+        : ""
+    }
     <div class="section">
       <div class="section-head"><span class="title">结算建议</span></div>
       ${transfers.length
@@ -1981,6 +2125,29 @@ clearFields("pur-item", "pur-amount");
       // 不把 loadProjects 的失败暴露成「预算保存失败」。
       loadProjects().catch(() => {});
       toast(val > 0 ? "预算已更新为 " + money(val) : "已取消预算设置");
+    } else if (action === "edit-bonus") {
+      // 同预算：纯前端切换编辑态，点了立刻出现输入框
+      state.editingBonus = true;
+      if (renderBonusPanel({ focusInput: true })) return;
+    } else if (action === "cancel-bonus") {
+      state.editingBonus = false;
+      if (renderBonusPanel()) return;
+    } else if (action === "save-bonus") {
+      const raw = $("#bonus-input").value.trim();
+      const val = raw === "" ? 0 : Number(raw);
+      if (!Number.isFinite(val) || val < 0) return toast("请输入不小于 0 的奖金金额");
+      const count = Number(state.settlement && state.settlement.family_count) || 0;
+      const ok = await withAdmin(
+        val > 0
+          ? `将任务奖金设为 ${money(val)}${count ? `（由 ${count} 家均摊出资，按完成数分配）` : ""}`
+          : "取消任务奖金设置（奖金改为「无」）",
+        async (pw) => {
+          await api("/projects/" + state.projectId, { method: "PUT", body: { bonus: val }, withProject: false, adminPw: pw });
+        }
+      );
+      if (!ok) return; // 取消操作：保持编辑态，输入内容不丢
+      state.editingBonus = false;
+      toast(val > 0 ? "任务奖金已更新为 " + money(val) : "已取消任务奖金");
     }
     await render();
   } catch (err) {

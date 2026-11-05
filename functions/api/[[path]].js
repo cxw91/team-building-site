@@ -149,6 +149,10 @@ async function ensureSchema(env) {
     try {
       await env.DB.prepare("ALTER TABLE passcodes ADD COLUMN admin_passcode TEXT NOT NULL DEFAULT ''").run();
     } catch {}
+    // 任务奖金版升级：projects 补 bonus 字段（已存在时会抛错，忽略即可）
+    try {
+      await env.DB.prepare("ALTER TABLE projects ADD COLUMN bonus REAL NOT NULL DEFAULT 0").run();
+    } catch {}
     const c = await env.DB.prepare("SELECT COUNT(*) AS c FROM passcodes").first();
     if ((!c || !c.c) && String(env.PASSCODE || "").trim()) {
       await env.DB
@@ -289,7 +293,7 @@ export async function onRequest(context) {
     const projectId = requestProjectId(request);
     if (!projectId) return err("缺少项目信息，请先选择或新建团建项目", 400);
     const proj = await env.DB
-      .prepare("SELECT id, name, status, budget, passcode_id FROM projects WHERE id = ?")
+      .prepare("SELECT id, name, status, budget, bonus, passcode_id FROM projects WHERE id = ?")
       .bind(projectId)
       .first();
     if (!proj || Number(proj.passcode_id) !== Number(me.id)) return err("项目不存在或已被删除", 404);
@@ -440,6 +444,21 @@ if (method === "POST") {
       const denied = requireProjectAdmin(request, me);
       if (denied) return denied;
     }
+    // 任务奖金池（元）：口径与预算一致——0 表示未设置；设置 / 修改 / 取消同样需要管理员密码
+    const bonusWas = round2(old.bonus);
+    const hasBonus = b.bonus !== undefined && b.bonus !== null && b.bonus !== "";
+    let nextBonus = bonusWas;
+    if (hasBonus) {
+      const nv = Number(b.bonus);
+      if (!Number.isFinite(nv) || nv < 0) return err("奖金必须是不小于 0 的数字");
+      if (nv > 100000000) return err("奖金金额过大，请填写不超过 1 亿元的数字");
+      nextBonus = round2(nv);
+    }
+    const bonusChanged = hasBonus && nextBonus !== bonusWas;
+    if (hasBonus) {
+      const denied = requireProjectAdmin(request, me);
+      if (denied) return denied;
+    }
     // 项目改名同样需要本口令的管理员密码；只改备注等其它字段不需要
     if (nextName !== old.name) {
       const denied = requireProjectAdmin(request, me);
@@ -459,8 +478,8 @@ if (method === "POST") {
     }
 
     await env.DB
-      .prepare("UPDATE projects SET name = ?, note = ?, status = ?, budget = ? WHERE id = ?")
-      .bind(nextName, String(b.note ?? old.note), nextStatus, nextBudget, id)
+      .prepare("UPDATE projects SET name = ?, note = ?, status = ?, budget = ?, bonus = ? WHERE id = ?")
+      .bind(nextName, String(b.note ?? old.note), nextStatus, nextBudget, nextBonus, id)
       .run();
     const fmtBudget = (v) => (Number(v) > 0 ? `¥${round2(v).toFixed(2)}` : "无");
     if (budgetChanged) {
@@ -470,6 +489,15 @@ if (method === "POST") {
         targetType: "project",
         targetId: id,
         detail: `预算 ${fmtBudget(budgetWas)} → ${fmtBudget(nextBudget)}`,
+      });
+    }
+    if (bonusChanged) {
+      await addLog(env, id, {
+        familyId: null,
+        action: nextBonus > 0 ? (bonusWas > 0 ? "修改任务奖金" : "设置任务奖金") : "取消任务奖金",
+        targetType: "project",
+        targetId: id,
+        detail: `任务奖金 ${fmtBudget(bonusWas)} → ${fmtBudget(nextBonus)}`,
       });
     }
     if (nextStatus !== old.status) {
@@ -1057,30 +1085,77 @@ async function handlePurchases(env, method, id, request, projectId) {
   return err("不支持的方法", 405);
 }
 
-// ---------- 结算（按家庭数均分 + 转账建议）----------
+// ---------- 结算（按家庭数均分 + 任务奖金 + 转账建议）----------
+// 把 poolCents（单位：分）按 weights 权重精确分配：先各自取整，剩下的分按小数部分从大到小各补 1 分。
+// 这样「各家获得之和」恰好等于奖金池（不会因为四舍五入出现 1 分钱对不上），出资均摊同理。
+function allocCents(poolCents, weights) {
+  const n = weights.length;
+  if (!n || poolCents <= 0) return new Array(n).fill(0);
+  const totalW = weights.reduce((s, w) => s + (Number(w) || 0), 0);
+  if (totalW <= 0) return new Array(n).fill(0);
+  const exact = weights.map((w) => (poolCents * (Number(w) || 0)) / totalW);
+  const out = exact.map((v) => Math.floor(v));
+  let rest = poolCents - out.reduce((s, v) => s + v, 0);
+  const order = exact
+    .map((v, i) => ({ i, frac: v - Math.floor(v) }))
+    .sort((a, b) => b.frac - a.frac || a.i - b.i);
+  for (let k = 0; rest > 0; k++, rest--) out[order[k % n].i] += 1;
+  return out;
+}
+
 async function computeSettlement(env, projectId) {
   const fams = (await env.DB.prepare("SELECT id, name FROM families WHERE project_id = ? ORDER BY id").bind(projectId).all()).results;
   const purs = (await env.DB.prepare("SELECT family_id, amount FROM purchases WHERE project_id = ?").bind(projectId).all()).results;
+  const project = (await env.DB.prepare("SELECT budget, bonus FROM projects WHERE id = ?").bind(projectId).first()) || {};
 
-  const total = purs.reduce((s, p) => s + (Number(p.amount) || 0), 0);
-  const count = fams.length;             // 分摊口径：按家庭数均分
-  const share = count > 0 ? total / count : 0;
+  const round2 = (n) => Math.round(n * 100) / 100;
+  // 全程用「分」做整数运算，避免 0.1+0.2 这类浮点误差影响差额与转账建议
+  const totalCents = Math.round(purs.reduce((s, p) => s + (Number(p.amount) || 0), 0) * 100);
+  const count = fams.length;
+
+  // 任务奖金口径：池子由各家均摊出资，再按「已完成采购」的任务数分配。
+  // 只统计挂在某家名下的已购项——清单里登记采购时会自动把该项归到登记家庭，
+  // 所以没人认领的已购项（极少见的历史数据）不参与分配，免得奖金落到「无主」的池子里。
+  const doneRows = (await env.DB
+    .prepare(
+      "SELECT claimed_family_id AS fid, COUNT(*) AS c FROM shopping_items " +
+        "WHERE project_id = ? AND status = '已购' AND claimed_family_id IS NOT NULL GROUP BY claimed_family_id"
+    )
+    .bind(projectId)
+    .all()).results;
+  const doneMap = {};
+  for (const r of doneRows) doneMap[r.fid] = Number(r.c) || 0;
+
+  const bonusCents = Math.round((Number(project.bonus) || 0) * 100);
+  const weights = fams.map((f) => doneMap[f.id] || 0);
+  const totalDone = weights.reduce((s, w) => s + w, 0);
+  // 没有任何家庭完成采购时，分配不成立：出资与获得都按 0 处理，结算口径与没有奖金时完全一致
+  const bonusActive = bonusCents > 0 && count > 0 && totalDone > 0;
+
+  const shareBase = allocCents(totalCents, new Array(count).fill(1)); // 总花费按家庭数均分
+  const contribution = bonusActive ? allocCents(bonusCents, new Array(count).fill(1)) : new Array(count).fill(0);
+  const earning = bonusActive ? allocCents(bonusCents, weights) : new Array(count).fill(0);
 
   const paidMap = {};
   for (const p of purs) {
     if (p.family_id == null) continue;
-    paidMap[p.family_id] = (paidMap[p.family_id] || 0) + (Number(p.amount) || 0);
+    paidMap[p.family_id] = (paidMap[p.family_id] || 0) + Math.round((Number(p.amount) || 0) * 100);
   }
 
-  const round2 = (n) => Math.round(n * 100) / 100;
-  const detail = fams.map((f) => {
-    const paid = paidMap[f.id] || 0;
+  const detail = fams.map((f, i) => {
+    const paidC = paidMap[f.id] || 0;
+    const shareC = shareBase[i] + contribution[i]; // 应摊 = 花费均分 + 奖金出资
+    const balanceC = paidC + earning[i] - shareC; // 差额 = 已垫付 + 获得奖金 − 应摊
     return {
       family_id: f.id,
       name: f.name,
-      paid: round2(paid),
-      share: round2(share),
-      balance: round2(paid - share),
+      paid: round2(paidC / 100),
+      share: round2(shareC / 100),
+      balance: round2(balanceC / 100),
+      done: weights[i], // 该家已完成（已购）的任务数，前端奖金图表会用到
+      bonus_in: round2(contribution[i] / 100),
+      bonus_out: round2(earning[i] / 100),
+      bonus_net: round2((earning[i] - contribution[i]) / 100),
     };
   });
 
@@ -1103,7 +1178,19 @@ async function computeSettlement(env, projectId) {
     if (creditors[j].amt <= 0.005) j++;
   }
 
-  return { total: round2(total), family_count: count, share: round2(share), basis: "按家庭数均分", detail, transfers };
+  return {
+    total: round2(totalCents / 100),
+    family_count: count,
+    // 顶部 KPI 用的「每家应摊」：有生效的奖金时把池子也算进来
+    share: count ? round2((totalCents + (bonusActive ? bonusCents : 0)) / count / 100) : 0,
+    basis: bonusActive ? "按家庭数均分（已含任务奖金池）" : "按家庭数均分",
+    bonus: round2(bonusCents / 100),
+    bonus_active: bonusActive,
+    bonus_total_done: totalDone,
+    bonus_contribution: bonusActive && count ? round2(bonusCents / count / 100) : 0,
+    detail,
+    transfers,
+  };
 }
 
 // ---------- 概览 ----------
@@ -1120,6 +1207,7 @@ async function computeOverview(env, projectId, project) {
 project: project ? { id: project.id, name: project.name, status: project.status } : null,
     total_amount: Math.round((Number(total) || 0) * 100) / 100,
     budget: Math.round((Number(project && project.budget) || 0) * 100) / 100,
+    bonus: Math.round((Number(project && project.bonus) || 0) * 100) / 100,
     family_count: famCount,
     member_count: memCount,
     carry_total: carryTotal,

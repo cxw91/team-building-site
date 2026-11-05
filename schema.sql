@@ -19,6 +19,10 @@
 --   ALTER TABLE passcodes ADD COLUMN admin_passcode TEXT NOT NULL DEFAULT '';
 --   然后由后端把空值初始化为当前 ADMIN_PASSCODE（也可以手动 UPDATE 指定各口令自己的密码）。
 
+-- 从「按口令的管理员密码版」升级到「任务奖金版」（projects 新增任务奖金字段）：不必重建，执行以下一行即可
+-- （后端首次运行也会自动补建，见 functions/api/[[path]].js 的 ensureSchema）：
+--   ALTER TABLE projects ADD COLUMN bonus REAL NOT NULL DEFAULT 0;
+
 -- 口令（租户）：一个口令对应一份独立的项目数据；登录某口令只能看到它名下的项目。
 -- 口令的新增 / 修改 / 删除需要管理权限密码（ADMIN_PASSCODE），在登录页即可操作。
 CREATE TABLE IF NOT EXISTS passcodes (
@@ -36,6 +40,8 @@ CREATE TABLE IF NOT EXISTS projects (
   note       TEXT NOT NULL DEFAULT '',             -- 备注：日期 / 地点 / 说明
 status     TEXT NOT NULL DEFAULT '进行中',        -- 进行中 / 已结束
   budget     REAL NOT NULL DEFAULT 0,              -- 项目预算（元）；0 表示未设置（页面显示「无」）
+  bonus      REAL NOT NULL DEFAULT 0,              -- 任务奖金池（元）；0 表示未设置。由各家均摊出资，
+                                                  -- 按「已完成采购」的任务数比例分配，计入结算应摊
   passcode_id INTEGER,                             -- 归属口令（passcodes.id）：不同口令之间项目互相不可见
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
