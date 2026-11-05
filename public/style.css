@@ -238,8 +238,11 @@ html[data-theme="dark"] {
   box-sizing: border-box;
 }
 
+/* 常驻滚动条槽位：内容变长（例如采购明细新增一行）导致竖向滚动条出现/消失时，
+   可用宽度不再变化，整页也就不会横向跳一下。 */
 html {
   -webkit-text-size-adjust: 100%;
+  scrollbar-gutter: stable;
 }
 
 body {
@@ -1259,8 +1262,10 @@ input[type="number"] {
   inset: 0;
   z-index: 1;
   border-radius: inherit;
+  /* 指针坐标缺省时把光斑挪到卡片外：重画后新元素还没拿到 --mx/--my，
+     若回落到卡片正中，会看到一团光「闪」到顶部再回到指针处。 */
   background: radial-gradient(
-    var(--spot-r, 320px) circle at var(--mx, 50%) var(--my, 0%),
+    var(--spot-r, 320px) circle at var(--mx, -999px) var(--my, -999px),
     var(--spot),
     transparent 72%
   );
@@ -1277,6 +1282,16 @@ input[type="number"] {
 .modal-card:hover::after,
 .pick:hover::after {
   opacity: 1;
+}
+
+/* 重建期间关掉过渡：整块 #content 被 innerHTML 替换后，新节点会先按「无状态」的样式排版，
+   随后回填焦点 / 指针坐标 / 只读禁用才变成最终样式。这些差异本来都是 0.2s 的过渡，
+   于是一次重建会让输入框边框、底色、光斑等一大片区域「淡入一遍」= 闪一下。
+   重建前后短暂挂上 .no-tr，让新节点直接以最终样式落位（无过渡 = 无闪烁）。 */
+#content.no-tr *,
+#content.no-tr *::before,
+#content.no-tr *::after {
+  transition: none !important;
 }
 
 /* ---------- 内容卡片 ---------- */
@@ -2349,6 +2364,13 @@ html[data-theme="dark"] .tone-red { color: #ff8fa5; }
   background: var(--surface);
   border: 1px solid var(--line-strong);
   box-shadow: var(--sh-2);
+}
+
+/* 入场动画只在「用户主动打开」时播放（JS 打 .enter）。
+   后台刷新会重建整个 #content，面板随之重建；如果恢复打开状态时也播这段动画，
+   面板会从 opacity:0 重新淡入一遍 —— 观感就是切到本页后候选面板「闪了一下」。
+   默认不带动画，恢复时是静态出现，与重建前的画面逐像素一致。 */
+.combo-list.enter {
   animation: menu-in 0.18s var(--ease) both;
 }
 

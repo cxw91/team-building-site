@@ -1068,19 +1068,32 @@ async function render() {
 }
 
 // 用缓存把某个页签先画出来（切页签时先画缓存、网络回来再后台刷新）；没有缓存返回 false，交给整页渲染兜底
+// 重建期间给 #content 挂 .no-tr 关掉过渡：新节点先按「无状态」样式排版，回填焦点 / 指针坐标 /
+// 禁用态后才变成最终样式，这些差异都会按 0.2s 过渡淡入一遍，眼看着就是整块闪一下。
 function paintTab(tab) {
   if (!state.tabReady[tab]) return false;
   const paint = PAINTERS[tab];
   if (!paint) return false;
+  const keepSuggest = captureSuggestOpen(); // 用户正开着名称候选框时，重画不该把它关掉
+  const c = $("#content");
+  if (c) c.classList.add("no-tr");
   try {
-    const keepSuggest = captureSuggestOpen(); // 用户正开着名称候选框时，重画不该把它关掉
     paint();
     applyReadonly();
     restoreSuggestOpen(keepSuggest);
     reapplyInflight(); // 重画后把在途请求的加载态刷回到新元素上
     return true;
   } catch {
+    // 画失败时立刻恢复过渡，别把「无过渡」的状态留在页面上
+    if (c) c.classList.remove("no-tr");
     return false;
+  } finally {
+    // 两帧后再恢复过渡：新节点在本次绘制里就已经是最终样式，恢复时不会有可补间的差异
+    if (c) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => c.classList.remove("no-tr"));
+      });
+    }
   }
 }
 
@@ -1655,10 +1668,23 @@ function purCandidates() {
     (s) => !!s.claimed_family_id && Number(s.claimed_family_id) === mine && s.status !== "已购"
   );
 }
-function setSuggestOpen(open) {
+// open：目标开合状态；animate：是否播入场动画。
+// 只有「用户主动打开」（点击 / 聚焦 / 键盘）才播；重建后的恢复必须传 false，
+// 否则整块 #content 重建时面板会重新淡入，看起来就是闪一下。
+function setSuggestOpen(open, animate = true) {
   const box = $("#pur-suggest"), input = $("#pur-item"), toggle = $("#pur-combo .combo-toggle");
   if (!box || !input) return;
-  state.purSuggestOpen = !!open;
+  const want = !!open;
+  // 面板「实际」是否已经展开：不能只看 state —— 整页重建后 state 可能还停在 true，
+  // 而新节点自带 hidden，那种情况必须真的展开一次。
+  const isOpen = !box.hidden && !!state.purSuggestOpen;
+  // 已经处于目标状态就直接返回：不重填列表、更不重播入场动画。
+  // 点输入框会先触发 focusin（开一次），松手后再触发 click（又调一次）；
+  // 第二次如果照旧从 .enter 重来，刚淡入一两帧的面板会被拉回 translateY(-6px) scale(.97)，
+  // 观感就是面板「抖一下」（实测 opacity 0 → 0.25 → 0 → 0.76 → 1）。
+  // 三角按钮同样是两次调用，只是都落在同一帧内，所以那边看不出问题。
+  if (want === isOpen) return;
+  state.purSuggestOpen = want;
   if (state.purSuggestOpen) {
     // 输入框只是展示位（选中后会被填上名称），不能拿它的值当搜索词：
     // 否则选过一次之后再重开，列表就只剩被选中的那一条，换不了别的项。恒列全部可选项。
@@ -1679,6 +1705,15 @@ function setSuggestOpen(open) {
     input.removeAttribute("aria-activedescendant");
   }
   box.hidden = !state.purSuggestOpen;
+  if (state.purSuggestOpen) {
+    // 摘掉上一次的 .enter 再按需加回：同一个节点反复开合时，只有先摘掉并强制结算，
+    // 动画才会从头播一次（否则类名没变化，浏览器不会重新开始动画）。
+    box.classList.remove("enter");
+    if (animate) {
+      void box.offsetWidth;
+      box.classList.add("enter");
+    }
+  }
   input.setAttribute("aria-expanded", state.purSuggestOpen ? "true" : "false");
   if (toggle) toggle.setAttribute("aria-expanded", state.purSuggestOpen ? "true" : "false");
   // 卡片上的 isolation 把下拉面板关在了自己的层叠上下文里，下面那张「各家采购金额」会盖住它。
@@ -1693,7 +1728,10 @@ function captureSuggestOpen() {
   return state.tab === "purchases" && !!state.purSuggestOpen;
 }
 function restoreSuggestOpen(keep) {
-  if (keep && state.tab === "purchases" && !state.purSuggestOpen) setSuggestOpen(true);
+  // 重建后的恢复：不播入场动画，否则面板会重新淡入 = 闪一下。
+  // 这里不再判断 state.purSuggestOpen —— 新节点一定是 hidden 的，setSuggestOpen 内部会按
+  // 「DOM 实际状态」判断要不要展开；提前判断 state 反而会在重建后漏掉恢复。
+  if (keep && state.tab === "purchases") setSuggestOpen(true, false);
 }
 function moveSuggestActive(delta) {
   const opts = [...document.querySelectorAll('#pur-suggest li[role="option"]')];
@@ -1712,7 +1750,10 @@ function chooseSuggestActive() {
   return true;
 }
 $("#content").addEventListener("focusin", (e) => {
-  if (e.target.id === "pur-item") setSuggestOpen(true);
+  // 已经展开时不再重开：后台刷新重建 #content 后，restoreForm 会把焦点回填到这个输入框，
+  // 同样会触发 focusin；若无条件重开，就等于把刚恢复好的面板再重建 + 重播一次入场动画，
+  // 观感正是「切到本页后面板闪一下」。
+  if (e.target.id === "pur-item" && !state.purSuggestOpen) setSuggestOpen(true);
 });
 $("#content").addEventListener("focusout", (e) => {
   if (e.target.id !== "pur-item") return;
@@ -1804,6 +1845,30 @@ async function fetchPurchases() {
   state.overview = o.data || {};
 }
 
+// 采购明细里的一行。抽成函数是为了让「整页重画」与「登记成功后就地插一行」共用同一份模板，
+// 两条路径产出的 DOM 必须完全一致，否则同一笔记录在两种路径下会长得不一样。
+function purchaseRowHtml(p) {
+  const mine = Number(p.family_id) === Number(state.familyId);
+  return `<div class="row">
+    <div class="main"><div class="name">${esc(p.item_name)}</div>
+      <div class="meta">${esc(familyName(p.family_id))} · ${fmtTime(p.purchased_at)}${p.quantity ? " · " + esc(p.quantity) : ""}</div></div>
+    <span class="amt">${money(p.amount)}</span>
+    ${
+      mine
+        ? dangerCell("purchase", p.id, "del-purchase")
+        : '<span class="tag off" title="只有登记这笔采购的家庭能删除">他家登记</span>'
+    }
+  </div>`;
+}
+
+// 「各家采购金额」下面那排家庭标签
+function famSummaryHtml(perFamily) {
+  if (!state.families.length) return '<span class="hint">还没有家庭</span>';
+  return `<div class="fam-summary">${state.families
+    .map((f) => `<span class="tag">${esc(f.name)} ${money(perFamily[f.id] || 0)}</span>`)
+    .join("")}</div>`;
+}
+
 // 只重画采购记录页内容（用缓存数据），供纯前端切换调用
 function paintPurchases() {
   const list = state.purchases || [];
@@ -1820,13 +1885,6 @@ function paintPurchases() {
   state.purActive = -1;
   const perFamily = {};
   list.forEach((p) => (perFamily[p.family_id] = (perFamily[p.family_id] || 0) + (Number(p.amount) || 0)));
-  // 家庭金额标签改用 flex 容器排布：行内 span 靠 margin-right 拼接时，换行后的行距只有
-  // 父级 line-height，手机端两行会贴在一起；flex 的 row-gap 才能给「陈家 / 赵家」之间留出稳定间距。
-  const summary = state.families.length
-    ? `<div class="fam-summary">${state.families
-        .map((f) => `<span class="tag">${esc(f.name)} ${money(perFamily[f.id] || 0)}</span>`)
-        .join("")}</div>`
-    : '<span class="hint">还没有家庭</span>';
 $("#content").innerHTML = `
     <div class="section">
       <div class="section-head"><span class="title">登记一笔采购</span></div>
@@ -1844,34 +1902,65 @@ $("#content").innerHTML = `
     <!-- 「各家采购金额」面板用普通面板底色（与上方「登记一笔采购」一致）；进度条与百分比仍按档位着色 -->
     <div class="section budget-summary">
       <div class="section-head"><span class="title">各家采购金额</span></div>
-      ${budgetProgressHtml(spent, budget)}
-      <div style="margin-top:10px">${summary}</div>
+      <div id="pur-summary">${budgetProgressHtml(spent, budget)}<div style="margin-top:10px">${famSummaryHtml(perFamily)}</div></div>
     </div>
     <div class="section">
-      <div class="section-head"><span class="title">采购明细</span><span class="hint">${list.length} 笔</span></div>
-      ${list.length
-        ? list
-            .map(
-              (p) => `<div class="row">
-                <div class="main"><div class="name">${esc(p.item_name)}</div>
-                  <div class="meta">${esc(familyName(p.family_id))} · ${fmtTime(p.purchased_at)}${p.quantity ? " · " + esc(p.quantity) : ""}</div></div>
-                <span class="amt">${money(p.amount)}</span>
-                ${
-                  Number(p.family_id) === Number(state.familyId)
-                    ? dangerCell("purchase", p.id, "del-purchase")
-                    : '<span class="tag off" title="只有登记这笔采购的家庭能删除">他家登记</span>'
-                }
-              </div>`
-            )
-            .join("")
-        : '<div class="empty">暂无采购记录</div>'}
+      <div class="section-head"><span class="title">采购明细</span><span class="hint" id="pur-count">${list.length} 笔</span></div>
+      <div id="pur-rows">${list.length ? list.map(purchaseRowHtml).join("") : '<div class="empty">暂无采购记录</div>'}</div>
     </div>`;
   // DOM 已重建。若重建前候选面板是打开的，把它恢复到打开状态并重新填充候选项，
   // 这样后台刷新 / 轮询不会把用户正在做的选择打断。
+  // 恢复必须是「静态出现」（animate=false）：否则 0.18s 的 menu-in 会重放一遍，
+  // 用户看到的就是候选面板闪一下。
   if (suggestWasOpen) {
     state.purSuggestOpen = true;
-    setSuggestOpen(true);
+    setSuggestOpen(true, false);
   }
+}
+
+// 登记成功后【就地】把新行插到采购明细顶部，并更新两处汇总 —— 不再整页重建 #content。
+// 以前这里走的是 await render()：整页重建会把三张卡片连同各自的光斑 / 边框动效一起重建，
+// 观感上就是「列表闪一下」，代价还有一次完整重排和三次接口往返。
+// 返回 false 表示当前 DOM 已经不在采购记录页（用户切走了），交给调用方整页兜底。
+function applyPurchaseAdded(rec) {
+  state.purchases = [rec].concat(state.purchases || []);
+  // 清单里的这一项随之变「已购」：候选框里不该再出现它，采购清单页也不该再显示「待购」。
+  const markDone = (list) => {
+    const it = (list || []).find((x) => Number(x.id) === Number(rec.item_id));
+    if (!it) return;
+    it.status = "已购";
+    if (!it.claimed_family_id) it.claimed_family_id = rec.family_id;
+  };
+  markDone(state.shopItems);
+  markDone(state.shoppingList);
+  // 概览页的「总花费」用的是缓存，顺手加上这一笔，切回概览时不会先显示旧数
+  if (state.overview && state.overview.total_amount !== undefined) {
+    state.overview.total_amount = (Number(state.overview.total_amount) || 0) + (Number(rec.amount) || 0);
+  }
+
+  const rows = $("#pur-rows");
+  const count = $("#pur-count");
+  if (!rows || !count) return false;
+
+  const empty = rows.querySelector(".empty");
+  if (empty) empty.remove();
+  rows.insertAdjacentHTML("afterbegin", purchaseRowHtml(rec));
+  count.textContent = state.purchases.length + " 笔";
+
+  const summary = $("#pur-summary");
+  if (summary) {
+    const perFamily = {};
+    let spent = 0;
+    state.purchases.forEach((p) => {
+      const a = Number(p.amount) || 0;
+      spent += a;
+      perFamily[p.family_id] = (perFamily[p.family_id] || 0) + a;
+    });
+    const budget = Number((state.overview || {}).budget) || 0;
+    summary.innerHTML =
+      budgetProgressHtml(spent, budget) + `<div style="margin-top:10px">${famSummaryHtml(perFamily)}</div>`;
+  }
+  return true;
 }
 
 // ---------- 结算 ----------
@@ -2009,13 +2098,29 @@ const PAINTERS = {
 };
 
 // ---------- 项目内事件委托 ----------
+// 点输入框要能「开 / 收」切换，但点下去会先触发 focusin 把面板打开，等 click 时
+// state 已经变过一轮了，直接取反就会「刚开又立刻关」。所以开合意图在按下的那一刻就定下来：
+// pointerdown 早于聚焦（触屏也是，focus 要等 touchend），一套逻辑桌面和手机通吃。
+let purPressWasOpen = null;
+$("#content").addEventListener("pointerdown", (e) => {
+  if (e.target && e.target.id === "pur-item") {
+    const box = $("#pur-suggest");
+    purPressWasOpen = !!(box && !box.hidden);
+  }
+});
 $("#content").addEventListener("click", async (e) => {
   const btn = e.target.closest("[data-action]");
   if (!btn) {
-    // 只读的名称输入框没有 data-action：点它（哪怕它已经处于聚焦状态）都展开候选。
+    // 只读的名称输入框没有 data-action：点它就是开合候选面板。
     // 只靠 focusin 有个死角——从候选里选完一项后输入框仍是聚焦的，再点它不触发 focusin，
-    // 于是就「选过一次就拉不下来了」。
-    if (e.target.id === "pur-item") setSuggestOpen(true);
+    // 于是就「选过一次就拉不下来了」；所以这里也要能开。
+    // 目标状态取「按下那一刻」的相反：按下时是收起的就开（focusin 已经开过，幂等跳过），
+    // 按下时是展开的就收。没有按下记录（键盘 / 脚本 .click()）时按当前状态取反。
+    if (e.target.id === "pur-item") {
+      const wasOpen = purPressWasOpen === null ? !!state.purSuggestOpen : purPressWasOpen;
+      purPressWasOpen = null;
+      setSuggestOpen(!wasOpen);
+    }
     return;
   }
   if (btn.dataset.busy === "1") return; // 正在处理中，忽略重复点击
@@ -2144,6 +2249,8 @@ clearFields("mem-name-" + fid, "mem-note-" + fid);
         setSuggestOpen(false);
         $("#pur-item").blur();
       } else {
+        // focus() 会先触发 focusin 展开；下一句是给「输入框已经聚焦、面板却是收起的」
+        // （比如刚从候选里选完一项）补开，幂等，不会重播动画。
         $("#pur-item").focus();
         setSuggestOpen(true);
       }
@@ -2167,11 +2274,24 @@ clearFields("mem-name-" + fid, "mem-note-" + fid);
         setSuggestOpen(false);
         return toast("只能选择你已接单的采购项，先去「采购清单」接任务再回来登记");
       }
-      await api("/purchases", {
+      const r = await api("/purchases", {
         method: "POST",
         body: { item_name: itemName, amount, family_id: Number(state.familyId), item_id: matched.id },
       });
-clearFields("pur-item", "pur-amount");
+      clearFields("pur-item", "pur-amount");
+      // 就地插一行、更新汇总，然后直接结束 —— 不再走末尾那次整页 render。
+      // 后端返回的只有 id，其余字段用这次提交的值补齐（purchased_at 与数据库 datetime('now') 同为 UTC）。
+      const rec = {
+        id: r && r.id,
+        item_id: matched.id,
+        item_name: itemName,
+        family_id: Number(state.familyId),
+        amount,
+        quantity: "",
+        purchased_at: new Date().toISOString().slice(0, 19).replace("T", " "),
+      };
+      if (!applyPurchaseAdded(rec)) await render(); // DOM 已不在本页时才整页兜底
+      return;
     } else if (action === "edit-budget") {
       // 纯前端切换：只重画面板这一块、不重新拉数据，点了立刻出现输入框
       state.editingBudget = true;

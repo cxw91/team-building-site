@@ -269,20 +269,39 @@
     (function () {
       var raf = 0, last = null;
       var SEL = ".card,.proj-card,.proj-add,.panel,.section,.modal-card,.pick";
+      // 记录的是坐标而不是事件对象：内容区会被整块重建（切页签、后台刷新），
+      // 重建后旧的事件目标已经脱离文档，必须用 elementFromPoint 重新取当前指针下的元素。
       function apply() {
         raf = 0;
-        var e = last;
-        if (!e || !e.target || !e.target.closest) return;
-        var el = e.target.closest(SEL);
+        if (!last || !document.elementFromPoint) return;
+        var el = document.elementFromPoint(last.x, last.y);
+        if (!el || !el.closest) return;
+        el = el.closest(SEL);
         if (!el) return;
         var r = el.getBoundingClientRect();
-        el.style.setProperty("--mx", Math.round(e.clientX - r.left) + "px");
-        el.style.setProperty("--my", Math.round(e.clientY - r.top) + "px");
+        el.style.setProperty("--mx", Math.round(last.x - r.left) + "px");
+        el.style.setProperty("--my", Math.round(last.y - r.top) + "px");
+      }
+      function schedule() {
+        if (!raf) raf = requestAnimationFrame(function () { apply(); });
       }
       document.addEventListener("pointermove", function (e) {
-        last = e;
-        if (!raf) raf = requestAnimationFrame(apply);
+        last = { x: e.clientX, y: e.clientY };
+        schedule();
       }, { passive: true });
+      // 重建后补一次：新卡片还没拿到指针坐标，光斑会突然消失（看上去也是一次闪）。
+      // 在 MutationObserver 里同步补，而不是等下一帧 rAF —— 微任务早于本帧的样式/绘制，
+      // 所以重建的那一帧就已经带上光斑；丢给 rAF 会白白空出一帧。
+      if (window.MutationObserver) {
+        var root = document.getElementById("content");
+        if (root) {
+          new MutationObserver(function (muts) {
+            for (var i = 0; i < muts.length; i++) {
+              if (muts[i].addedNodes && muts[i].addedNodes.length) { apply(); return; }
+            }
+          }).observe(root, { childList: true, subtree: true });
+        }
+      }
     })();
 
     /* 顶栏标题跟随当前页签。页签栏由 app.js 整体重建，所以用观察器同步，
