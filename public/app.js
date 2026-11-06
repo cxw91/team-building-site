@@ -496,21 +496,22 @@ async function withAdmin(reason, run, hint = "") {
   }
 }
 
-// 行内“确认删除”按钮（避免浏览器弹窗，也便于自动化验证）
+// 删除按钮：点击后弹确认框（Alert Dialog），不再行内二次确认
 function isPending(kind, id) {
   return state.pending && state.pending.kind === kind && Number(state.pending.id) === Number(id);
 }
 function dangerCell(kind, id, actionName, label = "删除") {
-  if (isPending(kind, id)) {
-    return `<button class="link danger" data-action="confirm-del" data-kind="${kind}" data-id="${id}">确认删除</button>` +
-      `<button class="link" data-action="cancel-del">取消</button>`;
-  }
   return `<button class="link" data-action="${actionName}" data-kind="${kind}" data-id="${id}">${label}</button>`;
 }
 
 // ---------- 视图切换 ----------
 function show(view) {
   ["loginView", "homeView", "pickView", "appView"].forEach((id) => $("#" + id).classList.toggle("hidden", id !== view));
+  // 点阵背景仅用于口令登入页；其余页面还原为原极光背景
+  if (dotGridCtl) {
+    if (view === "loginView") dotGridCtl.start();
+    else dotGridCtl.stop();
+  }
 }
 
 // ---------- 登录 ----------
@@ -797,13 +798,13 @@ function claimInfo(i) {
     ? `<span class="tag claim">${esc(i.claimed_family_name || "已认领")} 接单</span>`
     : "";
 }
-// 采购清单「接任务 / 取消接任务」控件：未认领 → 可接；已认领 → 只有接单家庭能取消。
+// 采购清单「接任务 / 取消任务」控件：未认领 → 可接；已认领 → 只有接单家庭能取消。
 // 已购的项不给「取消接任务」：要回到「未接单 + 待购」只能删掉对应的采购记录（后端同样会拦）。
 function claimAction(i) {
   if (i.status === "已购") return "";
   if (i.claimed_family_id) {
     const mine = Number(i.claimed_family_id) === Number(state.familyId);
-    return mine ? `<button class="link" data-action="unclaim-shop" data-id="${i.id}">取消接任务</button>` : "";
+    return mine ? `<button class="pill claim-cancel" data-action="unclaim-shop" data-id="${i.id}">取消任务</button>` : "";
   }
   // 与「待购 / 已购」状态标记同规格（同一 .pill 尺寸），接单前后高度不突变
   return `<button class="pill claim shrink" data-action="claim-shop" data-id="${i.id}">接任务</button>`;
@@ -878,7 +879,7 @@ function showPick() {
 // ---------- 主界面 ----------
 // 「切换家庭」就地下拉的内容：列出本项目全部家庭，点一下即切换（不再跳转到单独的选择界面）
 function renderFamilyMenu() {
-  const menu = $("#familyMenu");
+  const menu = $("#topMenuFamilyList");
   if (!menu) return;
   const mine = Number(state.familyId);
   menu.innerHTML = state.families.length
@@ -897,7 +898,7 @@ function renderChrome() {
   $("#projTitle").innerHTML = esc(state.projectName) + (isReadonly() ? ' <span class="tag off">已结束 · 只读</span>' : "");
   $("#whoami").textContent = "当前：" + familyName(state.familyId);
   renderFamilyMenu();
-  $("#familyMenu").classList.add("hidden"); // 界面重建时先收起下拉
+  $("#topMenu").classList.add("hidden"); // 界面重建时先收起下拉
   const nav = $("#tabs");
   // 页签按钮每次切换都会重建，但滑块必须留下来：只有同一个节点连续改 transform，
   // 浏览器才会把「旧位置 → 新位置」补成一段滑动，而不是瞬间跳过去。
@@ -1305,8 +1306,7 @@ function bonusPanelHtml() {
       <span>${count} 家各出 <b>${money(per)}</b></span>
       <span>已完成 <b>${s.bonus_total_done || 0}</b> 项任务</span>
     </div>
-    ${rows.map((d) => bonusRowHtml(d, max)).join("")}
-    <p class="hint" style="margin:10px 0 0">净收益 = 获得奖金 − 出资，已计入结算页的应摊与转账建议。</p>`;
+    ${rows.map((d) => bonusRowHtml(d, max)).join("")}`;
 }
 
 // 单行：家名 + 获得奖金占比条 + 金额；悬停看「完成数 / 出资 / 获得 / 净收益」。
@@ -1661,19 +1661,23 @@ function paintShopping() {
                     </div>
                   </div>`;
                 }
-                // 副信息行（浅色小字）：数量 / 单位 / 备注，再接接单家庭标记与接单时间
-                const sub = [i.quantity && esc(i.quantity), i.unit && esc(i.unit), i.note && esc(i.note)]
-                  .filter(Boolean)
-                  .join(" · ");
+                // 名称同一行右侧显示「数量·单位」，接单信息（接单家庭标记 + 接单时间）单独排在下一行左对齐
+                const qty = [i.quantity && esc(i.quantity), i.unit && esc(i.unit)].filter(Boolean).join(" ");
+                const note = i.note && esc(i.note);
+                const metaParts = [];
+                if (claimInfo(i)) metaParts.push(claimInfo(i));
+                if (i.claimed_at) metaParts.push(`<span class="m">接单于 ${fmtTime(i.claimed_at)}</span>`);
+                if (note) metaParts.push(`<span class="m">${note}</span>`);
+                const metaHtml = metaParts.length ? `<div class="meta shop-meta">${metaParts.join("")}</div>` : "";
                 return `<div class="row shop-row">
                   <div class="main">
-                    <div class="name">${esc(i.name)}</div>
-                    <div class="meta shop-meta">${sub ? `<span class="m">${sub}</span>` : ""}${claimInfo(i)}${
-                  i.claimed_at ? `<span class="m">接单于 ${fmtTime(i.claimed_at)}</span>` : ""
-                }</div>
+                    <div class="shop-head">
+                      <div class="name">${esc(i.name)}</div>
+                      ${qty ? `<span class="shop-qty">${qty}</span>` : ""}
+                    </div>
+                    ${metaHtml}
                   </div>
                   <div class="shop-actions">
-                    ${claimAction(i)}
                     ${shopStatusCell(i)}
                     <button class="link" data-action="edit-shop" data-id="${i.id}" title="修改这一项的数量和单位（不改名称）">修改</button>
                     ${
@@ -1682,7 +1686,7 @@ function paintShopping() {
                           // 页面下方的规则说明里也写清「删掉采购记录即可恢复可删除」。删掉记录后 status 回「待购」，删除自动恢复可用。
                           `<button class="link" data-action="del-shop" data-id="${i.id}" disabled aria-disabled="true" title="这一项已经登记过采购记录，不能删除；删掉对应的采购记录后它会回到「未接单 + 待购」，那时才能删" aria-label="删除不可用：这一项已经登记过采购记录，删掉对应的采购记录后即可删除">删除</button>`
                         : dangerCell("shopping", i.id, "del-shop")
-                    }
+                    }${claimAction(i)}
                   </div>
                 </div>`;
               })
@@ -2175,7 +2179,7 @@ function paintSettlement() {
             .join("")}
         </tbody>
       </table>
-      <p class="hint" style="margin-top:10px">净收益 = 获得奖金 − 出资；出资计入上面的「应摊」，获得奖金计入「差额」。</p>
+      <p class="hint" style="margin-top:10px">净收益 = 获得奖金 − 出资；出资计入上面的「应摊」。</p>
     </div>`
         : ""
     }
@@ -2267,28 +2271,13 @@ $("#content").addEventListener("click", async (e) => {
       else openPurMenu(btn);
       return;
     }
-    if (action === "confirm-del") {
-      state.pending = null;
-      const path = { member: "members", family: "families", carry: "carry-items", shopping: "shopping-items", purchase: "purchases" }[kind];
-      if (path) await api("/" + path + "/" + id, { method: "DELETE" });
-      if (kind === "family") {
-        await loadFamilies();
-        if (state.familyId && !state.families.some((f) => f.id === Number(state.familyId))) {
-          state.familyId = null;
-          localStorage.removeItem(familyKey(state.projectId));
-        }
-        // 顶栏「当前：某家」与家庭下拉都在 renderChrome 里，删掉的若是当前家庭要跟着刷新
-        renderChrome();
-      }
-    } else if (action === "cancel-del") {
-      // 收起行内「确认删除」：纯前端切换，只重画当前页签
-      state.pending = null;
-      if (paintCurrentTab()) return;
-    } else if (action === "del-member" || action === "del-family" || action === "del-carry" || action === "del-shop" || action === "del-purchase") {
-      // 点「删除」先进行内确认态：同样是纯前端切换
-      state.pending = { kind, id: Number(id) };
-      state.purMenuId = null; // 菜单收起，本行改画「确认删除 / 取消」
-      if (paintCurrentTab()) return;
+    if (action === "del-member" || action === "del-family" || action === "del-carry" || action === "del-shop" || action === "del-purchase") {
+      // 点「删除」先弹确认框（Alert Dialog），确认后才真正删除；并收起采购记录行的「⋯」菜单
+      // 用 closePurMenu() 而非只置空 state：它内部会 syncPurMenus() 把菜单 DOM 一并隐藏，
+      // 否则状态已关、DOM 仍开，确认框点「取消」后面板还在，之后点别处也关不掉（守卫直接 return）。
+      closePurMenu();
+      askDelete(kind, id);
+      return;
     } else if (action === "del-log") {
       const ok = await withAdmin("删除这条操作日志", async (pw) => {
         await api("/logs/" + id, { method: "DELETE", adminPw: pw });
@@ -2674,47 +2663,65 @@ $("#newProjModal").addEventListener("click", (e) => {
   const btn = e.target.closest('[data-action="del-fam-row"]');
   if (btn) removeFamRow(btn);
 });
-$("#logoutBtn").addEventListener("click", logout);
 $("#logoutBtn2").addEventListener("click", logout);
 $("#backHomeBtn").addEventListener("click", showHome);
 $("#homeBtn").addEventListener("click", showHome);
-// 「切换家庭」：就地下拉，不再跳到单独的选择界面
-$("#switchFamilyBtn").addEventListener("click", async (e) => {
+// 汉堡菜单（原「退出」按钮位置）：点开下拉，里面列全部家庭（点即切换）+ 退出
+$("#topMenuBtn").addEventListener("click", (e) => {
   e.stopPropagation();
-  const menu = $("#familyMenu");
+  const menu = $("#topMenu");
   if (!menu.classList.contains("hidden")) {
     menu.classList.add("hidden");
-    $("#switchFamilyBtn").setAttribute("aria-expanded", "false");
+    $("#topMenuBtn").setAttribute("aria-expanded", "false");
     return;
   }
   // 直接用已缓存的家庭列表（state.families）展开，不再为打开下拉重新请求一次
   renderFamilyMenu();
   menu.classList.remove("hidden");
-  $("#switchFamilyBtn").setAttribute("aria-expanded", "true");
-  // 默认以按钮左边缘对齐（正好在「切换家庭」文字下方）；窄屏上若右边会超出视口，就把它整体左移一点
-  menu.style.marginLeft = "0px";
-  const wrapRect = menu.parentElement.getBoundingClientRect();
-  const overflow = wrapRect.left + menu.getBoundingClientRect().width - (window.innerWidth - 8);
-  if (overflow > 0) menu.style.marginLeft = `-${Math.min(overflow, Math.max(wrapRect.left - 8, 0))}px`;
+  $("#topMenuBtn").setAttribute("aria-expanded", "true");
+  // 「切换家庭」子菜单默认收起，点开下拉后再点该项才展开名单
+  const sub0 = $("#topMenuFamilyList");
+  if (sub0) sub0.classList.add("hidden");
+  const swBtn0 = $("#switchFamilyBtn");
+  if (swBtn0) swBtn0.setAttribute("aria-expanded", "false");
 });
 
-// 点下拉里的家庭即切换（只改本机记录的操作家庭，不写库）
-$("#familyMenu").addEventListener("click", (e) => {
-  const btn = e.target.closest("[data-action='pick-family']");
-  if (!btn) return;
-  state.familyId = Number(btn.dataset.id);
-  localStorage.setItem(familyKey(state.projectId), String(state.familyId));
-  showApp(); // 重建界面：当前家庭标识与各页数据随之更新
-  toast("已切换到 " + familyName(state.familyId));
+// 点菜单里的「家庭」即切换（只改本机记录的操作家庭，不写库）；点「退出」走 logout
+$("#topMenu").addEventListener("click", (e) => {
+  // 点「切换家庭」：展开 / 收起家庭名单子菜单（不关闭整个下拉）
+  const sw = e.target.closest("[data-action='switch-family']");
+  if (sw) {
+    const sub = $("#topMenuFamilyList");
+    const willOpen = sub.classList.contains("hidden");
+    sub.classList.toggle("hidden");
+    sw.setAttribute("aria-expanded", String(willOpen));
+    return;
+  }
+  const fam = e.target.closest("[data-action='pick-family']");
+  if (fam) {
+    state.familyId = Number(fam.dataset.id);
+    localStorage.setItem(familyKey(state.projectId), String(state.familyId));
+    $("#topMenu").classList.add("hidden");
+    $("#topMenuBtn").setAttribute("aria-expanded", "false");
+    showApp(); // 重建界面：当前家庭标识与各页数据随之更新
+    toast("已切换到 " + familyName(state.familyId));
+    return;
+  }
+  const out = e.target.closest("[data-action='logout']");
+  if (out) {
+    $("#topMenu").classList.add("hidden");
+    $("#topMenuBtn").setAttribute("aria-expanded", "false");
+    logout();
+  }
 });
 
 // 点下拉以外的地方收起下拉
 document.addEventListener("click", (e) => {
-  const menu = $("#familyMenu");
+  const menu = $("#topMenu");
   if (!menu || menu.classList.contains("hidden")) return;
-  if (e.target.closest("#familyMenu") || e.target.closest("#switchFamilyBtn")) return;
+  if (e.target.closest("#topMenu") || e.target.closest("#topMenuBtn")) return;
   menu.classList.add("hidden");
-  $("#switchFamilyBtn").setAttribute("aria-expanded", "false");
+  $("#topMenuBtn").setAttribute("aria-expanded", "false");
 });
 
 // 管理权限密码弹窗
@@ -2727,6 +2734,65 @@ $("#adminPw").addEventListener("keydown", (e) => {
   } else if (e.key === "Escape") {
     cancelAdmin();
   }
+});
+
+// ---------- 删除确认弹窗（Alert Dialog） ----------
+let confirmOpts = null;
+function showConfirm({ title, message, okText = "确定", danger = false, onOk }) {
+  confirmOpts = { onOk };
+  $("#confirmTitle").textContent = title || "确认";
+  $("#confirmDesc").textContent = message || "";
+  const okBtn = $("#confirmOkBtn");
+  okBtn.textContent = okText;
+  okBtn.classList.toggle("danger", !!danger);
+  $("#confirmModal").classList.remove("hidden");
+  okBtn.focus();
+}
+function hideConfirm() {
+  $("#confirmModal").classList.add("hidden");
+  confirmOpts = null;
+}
+async function performDelete(kind, id) {
+  const path = { member: "members", family: "families", carry: "carry-items", shopping: "shopping-items", purchase: "purchases" }[kind];
+  if (!path) return;
+  await api("/" + path + "/" + id, { method: "DELETE" });
+  if (kind === "family") {
+    await loadFamilies();
+    if (state.familyId && !state.families.some((f) => f.id === Number(state.familyId))) {
+      state.familyId = null;
+      localStorage.removeItem(familyKey(state.projectId));
+    }
+    renderChrome();
+  }
+  state.pending = null;
+  await render();
+}
+function askDelete(kind, id) {
+  const labels = { member: "成员", family: "家庭", carry: "携带物品", shopping: "采购项", purchase: "采购记录" };
+  const name = labels[kind] || "该项";
+  showConfirm({
+    title: "确认删除",
+    message: `确定要删除这个${name}吗？删除后不可恢复。`,
+    okText: "确定删除",
+    danger: true,
+    onOk: () => performDelete(kind, id),
+  });
+}
+$("#confirmOkBtn").addEventListener("click", async () => {
+  const opts = confirmOpts;
+  if (!opts) return;
+  hideConfirm();
+  try {
+    if (opts.onOk) await opts.onOk();
+    toast("已删除");
+  } catch (e) {
+    toast(e.message);
+  }
+});
+$("#confirmCancelBtn").addEventListener("click", hideConfirm);
+$("#confirmModal").addEventListener("click", (e) => { if (e.target === $("#confirmModal")) hideConfirm(); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("#confirmModal").classList.contains("hidden")) hideConfirm();
 });
 
 // ---------- 口令管理（登录页）----------
@@ -2922,10 +2988,132 @@ if ($("#pcManageToggle")) {
   });
 }
 
+// ---------- 点阵背景（Dot Grid） ----------
+// 全屏固定 canvas：等间距圆点矩阵，一道从中心向外扩散的波让圆点依次放大变亮，
+// 光标周围圆点被点亮并带柔和光晕；配色跟随浅 / 深色主题，尊重 prefers-reduced-motion。
+// 仅在点阵背景需要出现的视图（口令登入页）调用 start()，其余视图调用 stop() 还原成原极光背景。
+let dotGridCtl = null;
+function initDotGrid() {
+  const canvas = document.getElementById("bg-particles");
+  if (!canvas) return { start() {}, stop() {} };
+  const ctx = canvas.getContext("2d");
+  const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let w = 0, h = 0, dpr = Math.min(window.devicePixelRatio || 1, 2);
+  let raf = 0, active = false;
+  let mx = -9999, my = -9999; // 光标位置（移出视区时复位）
+  const gap = 26;
+
+  function isDark() {
+    return document.documentElement.getAttribute("data-theme") === "dark";
+  }
+
+  function resize() {
+    w = canvas.clientWidth || window.innerWidth;
+    h = canvas.clientHeight || window.innerHeight;
+    canvas.width = Math.floor(w * dpr);
+    canvas.height = Math.floor(h * dpr);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  function draw(t) {
+    ctx.clearRect(0, 0, w, h);
+    const dark = isDark();
+    const cx = w / 2, cy = h / 2;
+    // 深色下用叠加混色发光；浅色下用正常混色（浅底上叠加会看不见）
+    ctx.globalCompositeOperation = dark ? "lighter" : "source-over";
+    for (let y = gap / 2; y < h + gap; y += gap) {
+      for (let x = gap / 2; x < w + gap; x += gap) {
+        const dc = Math.hypot(x - cx, y - cy);
+        const wave = 0.5 + 0.5 * Math.sin(dc * 0.016 - t * 1.5); // 中心向外波纹
+        const d = Math.hypot(x - mx, y - my);
+        const near = Math.exp(-d / 115); // 光标邻近度，越近越亮
+        const breathe = 0.5 + 0.5 * Math.sin(t * 0.9 + x * 0.002 + y * 0.002);
+        let r, a, fill;
+        if (dark) {
+          r = 0.7 + wave * 1.5 + near * 2.8 + breathe * 0.3;
+          a = 0.09 + wave * 0.28 + near * 0.55;
+          const hue = 190 + wave * 75; // 青 → 紫
+          fill = "hsla(" + hue + ",95%," + (58 + wave * 16) + "%," + a + ")";
+        } else {
+          r = 0.7 + wave * 1.0 + near * 2.4 + breathe * 0.25;
+          a = 0.05 + wave * 0.1 + near * 0.5;
+          const hue = 245 + wave * 20; // 靛蓝 → 紫
+          fill = "hsla(" + hue + ",70%," + (48 - near * 18) + "%," + a + ")";
+        }
+        ctx.fillStyle = fill;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+    }
+    // 光标柔和光晕
+    if (mx > -1) {
+      const g = ctx.createRadialGradient(mx, my, 0, mx, my, 170);
+      if (dark) {
+        g.addColorStop(0, "rgba(34,211,238,0.11)");
+        g.addColorStop(1, "rgba(34,211,238,0)");
+      } else {
+        g.addColorStop(0, "rgba(109,91,246,0.10)");
+        g.addColorStop(1, "rgba(109,91,246,0)");
+      }
+      ctx.fillStyle = g;
+      ctx.fillRect(mx - 170, my - 170, 340, 340);
+    }
+    ctx.globalCompositeOperation = "source-over";
+  }
+
+  function frame(now) {
+    draw(now * 0.001);
+    raf = requestAnimationFrame(frame);
+  }
+
+  function start() {
+    active = true;
+    resize();
+    if (reduce) draw(0); // 静态一帧（波纹固定相位，不滚动、不跟随）
+    else if (!raf) frame(performance.now());
+  }
+
+  function stop() {
+    active = false;
+    if (raf) { cancelAnimationFrame(raf); raf = 0; }
+    ctx.clearRect(0, 0, w || canvas.clientWidth || window.innerWidth, h || canvas.clientHeight || window.innerHeight);
+  }
+
+  // 光标位置追踪；移出视区时复位（光晕与邻近点亮消失）
+  if (!reduce) {
+    window.addEventListener("pointermove", (e) => {
+      mx = e.clientX; my = e.clientY;
+    }, { passive: true });
+    document.addEventListener("mouseout", (e) => {
+      if (!e.relatedTarget) { mx = -9999; my = -9999; } // 移出窗口
+    });
+    window.addEventListener("blur", () => { mx = -9999; my = -9999; });
+  }
+
+  // 浅色 / 深色切换时，若处于静态（减少动效）模式则补画一帧
+  new MutationObserver(() => { if (reduce && active) draw(0); }).observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["data-theme"],
+  });
+
+  window.addEventListener("resize", resize);
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      if (raf) { cancelAnimationFrame(raf); raf = 0; }
+    } else if (!reduce && !raf && active) {
+      frame(performance.now());
+    }
+  });
+
+  return { start, stop };
+}
+
 // ---------- 启动 ----------
 (async function init() {
   hardenSecretInputs();
   applyTheme(currentTheme(), false); // 主题已由 index.html 头部脚本定好，这里只同步按钮文案
+  dotGridCtl = initDotGrid();
   if (!state.token) return show("loginView");
   try {
     await afterLogin();

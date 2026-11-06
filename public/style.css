@@ -52,7 +52,7 @@
   --brand-ink: #4b3fd4;
   --brand-soft: rgba(109, 91, 246, 0.1);
   --brand-line: rgba(109, 91, 246, 0.32);
-  --accent: #16b8d4;
+  --accent: #22d3ee;
   --accent-soft: rgba(22, 184, 212, 0.12);
 
   /* 语义 */
@@ -293,6 +293,15 @@ button {
   pointer-events: none;
 }
 
+/* 点阵背景：装饰性 canvas（Dot Grid），跟随主题配色，尊重 prefers-reduced-motion */
+#bg-particles {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
 .orb {
   position: absolute;
   border-radius: 50%;
@@ -449,6 +458,7 @@ html[data-theme="dark"] .bg-vignette {
   gap: 8px;
   margin-left: auto;
   min-width: 0;
+  position: relative;
 }
 
 /* 顶栏里的次级按钮（不是主操作，所以用描边而不是填充色） */
@@ -904,6 +914,86 @@ html[data-theme="dark"] .bg-vignette {
   background: var(--brand-soft);
   color: var(--side-strong);
   box-shadow: inset 0 0 0 1px var(--side-active-ring);
+}
+
+/* 顶栏汉堡菜单（由「退出」按钮改来）：里面列全部家庭（点即切换）+ 退出 */
+.top-dropdown {
+  position: absolute;
+  right: 0;
+  left: auto;
+  top: calc(100% + 8px);
+  z-index: 70;
+  min-width: 200px;
+  max-width: 280px;
+  padding: 6px;
+  border-radius: 14px;
+  background: var(--side-menu-bg);
+  border: 1px solid var(--side-menu-line);
+  box-shadow: var(--sh-2);
+  animation: menu-in 0.18s var(--ease) both;
+  transform-origin: top right;
+}
+/* 「切换家庭」展开的子菜单：左缩进 + 左侧引导线，表明它是上一项的下级 */
+.top-menu-sub {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 4px 0 4px 12px;
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+  max-height: min(260px, 46vh);
+  overflow-y: auto;
+}
+.top-menu-sub.hidden {
+  display: none;
+}
+/* 切换家庭条目右侧的箭头：收起时朝右（–90°），展开时朝下（0°） */
+.top-menu-item .caret {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 16px;
+  margin-left: auto;
+  transition: transform 0.2s var(--ease);
+}
+.top-menu-item[aria-expanded="false"] .caret {
+  transform: rotate(-90deg);
+}
+.top-menu-sep {
+  height: 1px;
+  background: var(--line);
+  margin: 6px 4px;
+}
+.top-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--side-item);
+  font-family: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.18s, color 0.18s;
+}
+.top-menu-item:hover {
+  background: var(--side-item-hover);
+  color: var(--side-strong);
+}
+.top-menu-item .ico {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+}
+.modal-actions .primary.danger {
+  background: var(--danger-fill);
+  border-color: var(--danger-fill);
+}
+.modal-actions .primary.danger:hover {
+  filter: brightness(1.05);
 }
 
 .family-item .hint {
@@ -2454,6 +2544,20 @@ html[data-theme="dark"] .tone-red { color: #ff8fa5; }
   font-size: 11.8px;
 }
 
+/* 采购清单行：数量·单位放到名称同一行右侧，接单信息单独排在下一行左对齐 */
+.shop-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  margin-left: 8px;
+}
+.shop-qty {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
 .shop-actions {
   display: flex;
   align-items: center;
@@ -2471,6 +2575,17 @@ html[data-theme="dark"] .tone-red { color: #ff8fa5; }
   font-size: 12px;
   padding: 5px 8px;
   min-height: 28px;
+}
+
+/* 已接单家庭的「取消任务」做成带底色 + 描边的胶囊，和「待购 / 已购」状态胶囊视觉一致 */
+.pill.claim-cancel {
+  background: var(--surface-2);
+  border-color: var(--line);
+  color: var(--text);
+}
+.pill.claim-cancel:hover {
+  background: var(--surface-3);
+  border-color: var(--line-strong);
 }
 
 /* ---------- 组合框（采购记录选物品） ---------- */
@@ -3528,18 +3643,18 @@ html[data-theme="dark"] .theme-icon--moon {
 
   .shop-row {
     align-items: flex-start;
-    /* 「名称 + 副信息」和「控件组」都是 flex-basis:100%，父行必须允许换行，
-       否则两块各被压成半行宽，控件组只能把「删除」挤到下一行。 */
     flex-wrap: wrap;
     row-gap: 10px;
   }
 
+  /* 手机端：采购名 + 操作按钮同行（名在左、按钮在右），接单信息在名下另起一行并左对齐 */
   .shop-row .main {
-    flex: 1 1 100%;
+    flex: 1 1 auto;
+    min-width: 0;
   }
 
   .shop-actions {
-    flex: 1 1 100%;
+    flex: 0 0 auto;
     flex-wrap: wrap;
     row-gap: 6px;
     justify-content: flex-end;

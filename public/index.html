@@ -30,6 +30,7 @@
     <span class="orb orb-3"></span>
     <span class="bg-grid"></span>
     <span class="bg-vignette"></span>
+    <canvas id="bg-particles" aria-hidden="true"></canvas>
   </div>
 
   <!-- 图标集：线条（描边）风格，24×24、描边 1.7、圆角端点，颜色跟随 currentColor。
@@ -73,6 +74,9 @@
       </symbol>
       <symbol id="icon-chevron" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
         <path d="M6 9.5l6 6 6-6" />
+      </symbol>
+      <symbol id="icon-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 7h16M4 12h16M4 17h16" />
       </symbol>
       <!-- 品牌图案：只定义一次，四处 .brand-mark 用 <use> 引用。
            fill 用 currentColor，颜色取 .brand-mark 的白色，方块底色仍是原来的紫色渐变。 -->
@@ -221,24 +225,30 @@
       <header class="topbar">
         <span class="topbar-dot" aria-hidden="true"></span>
         <h2 class="topbar-title" id="pageTitle">概览</h2>
-        <!-- 右上角操作区：切换家庭 / 项目中心 / 退出 / 主题，统一放在顶栏右侧 -->
+        <!-- 右上角操作区：项目中心 / 汉堡菜单（切换家庭 + 退出）/ 主题，统一放在顶栏右侧 -->
         <div class="topbar-actions">
-          <span class="switch-wrap">
-            <button id="switchFamilyBtn" class="top-btn" aria-haspopup="menu" aria-expanded="false">
-              <svg class="ico" aria-hidden="true"><use href="#icon-switch"></use></svg><span class="top-btn-text">切换家庭</span>
-            </button>
-            <div id="familyMenu" class="family-menu hidden" role="menu" aria-label="切换家庭"></div>
-          </span>
-          <button id="homeBtn" class="top-btn">
-            <svg class="ico" aria-hidden="true"><use href="#icon-home"></use></svg><span class="top-btn-text">项目中心</span>
-          </button>
-          <button id="logoutBtn" class="top-btn">
-            <svg class="ico" aria-hidden="true"><use href="#icon-logout"></use></svg><span class="top-btn-text">退出</span>
-          </button>
           <button class="theme-btn" data-action="toggle-theme" type="button" title="切换主题" aria-label="切换主题">
             <svg class="theme-icon theme-icon--sun" aria-hidden="true" focusable="false"><use href="#icon-sun"></use></svg>
             <svg class="theme-icon theme-icon--moon" aria-hidden="true" focusable="false"><use href="#icon-moon"></use></svg>
           </button>
+          <button id="homeBtn" class="top-btn">
+            <svg class="ico" aria-hidden="true"><use href="#icon-home"></use></svg><span class="top-btn-text">项目中心</span>
+          </button>
+          <button id="topMenuBtn" class="top-btn" aria-haspopup="menu" aria-expanded="false" title="菜单" aria-label="菜单">
+            <svg class="ico" aria-hidden="true"><use href="#icon-menu"></use></svg>
+          </button>
+          <div id="topMenu" class="top-dropdown hidden" role="menu" aria-label="菜单">
+            <button class="top-menu-item" id="switchFamilyBtn" data-action="switch-family" role="menuitem" aria-haspopup="true" aria-expanded="false">
+              <svg class="ico" aria-hidden="true"><use href="#icon-switch"></use></svg>
+              <span>切换家庭</span>
+              <svg class="ico caret" aria-hidden="true"><use href="#icon-chevron"></use></svg>
+            </button>
+            <div id="topMenuFamilyList" class="top-menu-sub hidden"></div>
+            <div class="top-menu-sep"></div>
+            <button class="top-menu-item" data-action="logout" role="menuitem">
+              <svg class="ico" aria-hidden="true"><use href="#icon-logout"></use></svg><span>退出</span>
+            </button>
+          </div>
         </div>
       </header>
       <main id="content" class="content"></main>
@@ -256,6 +266,18 @@
       <div class="modal-actions">
         <button id="adminCancelBtn" class="ghost">取消</button>
         <button id="adminOkBtn" class="primary">确定</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 删除确认弹窗（Alert Dialog） -->
+  <div id="confirmModal" class="modal hidden">
+    <div class="modal-card">
+      <h3 class="modal-title" id="confirmTitle">确认删除</h3>
+      <p class="modal-desc" id="confirmDesc"></p>
+      <div class="modal-actions">
+        <button id="confirmCancelBtn" class="ghost">取消</button>
+        <button id="confirmOkBtn" class="primary danger">确定删除</button>
       </div>
     </div>
   </div>
