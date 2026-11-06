@@ -293,13 +293,19 @@ button {
   pointer-events: none;
 }
 
-/* 点阵背景：装饰性 canvas（Dot Grid），跟随主题配色，尊重 prefers-reduced-motion */
+/* 星座连线背景：装饰性 canvas，仅在深色主题显示，尊重 prefers-reduced-motion */
 #bg-particles {
   position: absolute;
   inset: 0;
   width: 100%;
   height: 100%;
   pointer-events: none;
+}
+
+/* 浅色主题完全不显示：JS 会同时停掉动画帧并清空画布，这里兜住主题切换的那一瞬间。
+   用 visibility 而非 display，canvas 仍能取到正确尺寸，切回深色时不用等布局重算。 */
+html:not([data-theme="dark"]) #bg-particles {
+  visibility: hidden;
 }
 
 .orb {

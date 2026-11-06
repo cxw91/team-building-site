@@ -507,10 +507,10 @@ function dangerCell(kind, id, actionName, label = "删除") {
 // ---------- 视图切换 ----------
 function show(view) {
   ["loginView", "homeView", "pickView", "appView"].forEach((id) => $("#" + id).classList.toggle("hidden", id !== view));
-  // 点阵背景仅用于口令登入页；其余页面还原为原极光背景
-  if (dotGridCtl) {
-    if (view === "loginView") dotGridCtl.start();
-    else dotGridCtl.stop();
+  // 星座连线仅用于口令登入页；其余页面清空画布、还原为原极光背景
+  if (constellationCtl) {
+    if (view === "loginView") constellationCtl.start();
+    else constellationCtl.stop();
   }
 }
 
@@ -2988,24 +2988,30 @@ if ($("#pcManageToggle")) {
   });
 }
 
-// ---------- 点阵背景（Dot Grid） ----------
-// 全屏固定 canvas：等间距圆点矩阵，一道从中心向外扩散的波让圆点依次放大变亮，
-// 光标周围圆点被点亮并带柔和光晕；配色跟随浅 / 深色主题，尊重 prefers-reduced-motion。
-// 仅在点阵背景需要出现的视图（口令登入页）调用 start()，其余视图调用 stop() 还原成原极光背景。
-let dotGridCtl = null;
-function initDotGrid() {
+// ---------- 星座连线背景（Constellation Links） ----------
+// 仅「深色主题 + 口令登入页」：数十个缓慢漂浮的发光节点，距离小于阈值时连极细的线；
+// 光标附近节点被轻微吸向光标，移开后平滑回弹（位置每帧从基础坐标重算，不累积速度）。
+// 浅色主题下完全不显示：停掉动画帧并清空画布，切到深色时即时恢复（无需刷新）。
+// 沿用参考的青 / 蓝 / 紫 / 粉 5 色 + lighter 发光；极光色团 / 网格 / 暗角由 CSS 提供。
+let constellationCtl = null;
+function initConstellation() {
   const canvas = document.getElementById("bg-particles");
   if (!canvas) return { start() {}, stop() {} };
   const ctx = canvas.getContext("2d");
   const reduce = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  const TAU = Math.PI * 2;
+  const PALETTE = ["34,211,238", "59,130,246", "168,85,247", "236,72,153", "103,232,249"];
   let w = 0, h = 0, dpr = Math.min(window.devicePixelRatio || 1, 2);
   let raf = 0, active = false;
-  let mx = -9999, my = -9999; // 光标位置（移出视区时复位）
-  const gap = 26;
+  let ox = 0, oy = 0;                       // canvas 左上角相对视口的偏移
+  let mx = -9999, my = -9999, mouseOn = false;
+  let infl = 0, lastNow = 0;                // 聚拢强度的平滑系数
+  let nodes = [], lim = 0, radius = 0, pullMax = 0;
 
   function isDark() {
     return document.documentElement.getAttribute("data-theme") === "dark";
   }
+  const rgba = (rgb, a) => "rgba(" + rgb + "," + a + ")";
 
   function resize() {
     w = canvas.clientWidth || window.innerWidth;
@@ -3013,97 +3019,151 @@ function initDotGrid() {
     canvas.width = Math.floor(w * dpr);
     canvas.height = Math.floor(h * dpr);
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  }
-
-  function draw(t) {
-    ctx.clearRect(0, 0, w, h);
-    const dark = isDark();
-    const cx = w / 2, cy = h / 2;
-    // 深色下用叠加混色发光；浅色下用正常混色（浅底上叠加会看不见）
-    ctx.globalCompositeOperation = dark ? "lighter" : "source-over";
-    for (let y = gap / 2; y < h + gap; y += gap) {
-      for (let x = gap / 2; x < w + gap; x += gap) {
-        const dc = Math.hypot(x - cx, y - cy);
-        const wave = 0.5 + 0.5 * Math.sin(dc * 0.016 - t * 1.5); // 中心向外波纹
-        const d = Math.hypot(x - mx, y - my);
-        const near = Math.exp(-d / 115); // 光标邻近度，越近越亮
-        const breathe = 0.5 + 0.5 * Math.sin(t * 0.9 + x * 0.002 + y * 0.002);
-        let r, a, fill;
-        if (dark) {
-          r = 0.7 + wave * 1.5 + near * 2.8 + breathe * 0.3;
-          a = 0.09 + wave * 0.28 + near * 0.55;
-          const hue = 190 + wave * 75; // 青 → 紫
-          fill = "hsla(" + hue + ",95%," + (58 + wave * 16) + "%," + a + ")";
-        } else {
-          r = 0.7 + wave * 1.0 + near * 2.4 + breathe * 0.25;
-          a = 0.05 + wave * 0.1 + near * 0.5;
-          const hue = 245 + wave * 20; // 靛蓝 → 紫
-          fill = "hsla(" + hue + ",70%," + (48 - near * 18) + "%," + a + ")";
-        }
-        ctx.fillStyle = fill;
-        ctx.beginPath();
-        ctx.arc(x, y, r, 0, Math.PI * 2);
-        ctx.fill();
+    const rect = canvas.getBoundingClientRect();
+    ox = rect.left; oy = rect.top;
+    // 参考用 W*13% 作阈值，在 390px 窄屏只剩约 50px，几乎连不出线；
+    // 这里改成按平均节点间距换算的密度自适应，桌面与手机连线密度接近。
+    const n = Math.max(42, Math.min(96, Math.round((w * h) / 14000)));
+    lim = Math.sqrt((w * h) / n) * 1.35;
+    // 登录卡片遮住视口正中：影响半径太小时聚拢全发生在卡片底下，用户看不见反馈。
+    // 取 0.38 覆盖到卡片外圈，位移仍只有半径的 15%，不会把连线拉成长条打结。
+    radius = Math.min(w, h) * 0.38;
+    pullMax = radius * 0.15;
+    if (nodes.length !== n) {
+      nodes = [];
+      for (let i = 0; i < n; i++) {
+        nodes.push({
+          bx: Math.random(), by: Math.random(),
+          phase: Math.random() * TAU,
+          size: Math.random(),
+          ci: i % PALETTE.length,
+        });
       }
     }
-    // 光标柔和光晕
-    if (mx > -1) {
-      const g = ctx.createRadialGradient(mx, my, 0, mx, my, 170);
-      if (dark) {
-        g.addColorStop(0, "rgba(34,211,238,0.11)");
-        g.addColorStop(1, "rgba(34,211,238,0)");
-      } else {
-        g.addColorStop(0, "rgba(109,91,246,0.10)");
-        g.addColorStop(1, "rgba(109,91,246,0)");
+  }
+
+  function draw(t, k) {
+    ctx.clearRect(0, 0, w, h);
+    ctx.globalCompositeOperation = "lighter";
+    const pts = new Array(nodes.length);
+    for (let i = 0; i < nodes.length; i++) {
+      const nd = nodes[i];
+      let x = (nd.bx + Math.sin(t * 0.3 + nd.phase) * 0.02) * w;
+      let y = (nd.by + Math.cos(t * 0.25 + nd.phase) * 0.02) * h;
+      if (k > 0.001) {
+        const dx = mx - x, dy = my - y;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d < radius && d > 0.001) {
+          const f = 1 - d / radius;
+          const pull = f * f * pullMax * k;
+          x += (dx / d) * pull;
+          y += (dy / d) * pull;
+        }
       }
-      ctx.fillStyle = g;
-      ctx.fillRect(mx - 170, my - 170, 340, 340);
+      pts[i] = { x, y, ci: nd.ci, size: nd.size };
+    }
+    // 连线：alpha 随距离线性衰减；n <= 96 时两两比较约 4500 次/帧
+    ctx.lineWidth = 0.7;
+    const lim2 = lim * lim;
+    for (let i = 0; i < pts.length; i++) {
+      const a = pts[i];
+      for (let j = i + 1; j < pts.length; j++) {
+        const b = pts[j];
+        const dx = a.x - b.x, dy = a.y - b.y;
+        const d2 = dx * dx + dy * dy;
+        if (d2 >= lim2) continue;
+        const fade = 1 - Math.sqrt(d2) / lim;
+        ctx.strokeStyle = rgba(PALETTE[a.ci], 0.22 * fade);
+        ctx.beginPath();
+        ctx.moveTo(a.x, a.y);
+        ctx.lineTo(b.x, b.y);
+        ctx.stroke();
+      }
+    }
+    // 节点
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      ctx.fillStyle = rgba(PALETTE[p.ci], 0.8);
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, 1 + p.size * 1.8, 0, TAU);
+      ctx.fill();
     }
     ctx.globalCompositeOperation = "source-over";
   }
 
+  // 浅色主题 / 后台标签页 / 非登录页都不画：停掉整条 rAF 链，也不留上一帧的残影
+  function enabled() {
+    return active && isDark() && !document.hidden;
+  }
+
+  function halt() {
+    if (raf) { cancelAnimationFrame(raf); raf = 0; }
+    mouseOn = false;
+    infl = 0; lastNow = 0;
+    ctx.clearRect(0, 0, w || canvas.clientWidth || window.innerWidth, h || canvas.clientHeight || window.innerHeight);
+  }
+
+  function resume() {
+    if (!enabled()) return;
+    resize();
+    if (reduce) draw(0, 0); // 静态一帧：不漂浮、不响应光标
+    else if (!raf) frame(performance.now());
+  }
+
   function frame(now) {
-    draw(now * 0.001);
+    if (!enabled()) { raf = 0; return; } // 主题刚切到浅色时，已排队的回调直接收尾
+    if (!lastNow) lastNow = now;
+    const dt = Math.max(0, Math.min(64, now - lastNow));
+    lastNow = now;
+    // 同一时间戳重复调用时 dt = 0 → infl 不变，重画结果保持一致
+    infl += ((mouseOn ? 1 : 0) - infl) * Math.min(1, dt * 0.009);
+    draw(now * 0.001, infl);
     raf = requestAnimationFrame(frame);
   }
 
   function start() {
     active = true;
-    resize();
-    if (reduce) draw(0); // 静态一帧（波纹固定相位，不滚动、不跟随）
-    else if (!raf) frame(performance.now());
+    if (enabled()) resume();
+    else halt();
   }
 
   function stop() {
     active = false;
-    if (raf) { cancelAnimationFrame(raf); raf = 0; }
-    ctx.clearRect(0, 0, w || canvas.clientWidth || window.innerWidth, h || canvas.clientHeight || window.innerHeight);
+    halt();
   }
 
-  // 光标位置追踪；移出视区时复位（光晕与邻近点亮消失）
+  // 光标追踪：触屏抬手后必须复位，否则粒子会一直聚在最后的触摸点
   if (!reduce) {
     window.addEventListener("pointermove", (e) => {
-      mx = e.clientX; my = e.clientY;
+      if (!enabled()) return;
+      mx = e.clientX - ox; my = e.clientY - oy; mouseOn = true;
     }, { passive: true });
-    document.addEventListener("mouseout", (e) => {
-      if (!e.relatedTarget) { mx = -9999; my = -9999; } // 移出窗口
-    });
-    window.addEventListener("blur", () => { mx = -9999; my = -9999; });
+    window.addEventListener("pointerup", (e) => { if (e.pointerType !== "mouse") mouseOn = false; });
+    window.addEventListener("pointercancel", () => { mouseOn = false; });
+    document.addEventListener("mouseout", (e) => { if (!e.relatedTarget) mouseOn = false; });
+    window.addEventListener("blur", () => { mouseOn = false; });
   }
 
-  // 浅色 / 深色切换时，若处于静态（减少动效）模式则补画一帧
-  new MutationObserver(() => { if (reduce && active) draw(0); }).observe(document.documentElement, {
+  // 主题切换即时生效：切到浅色停画并清空，切回深色重新起帧（含减少动效的静态帧）
+  new MutationObserver(() => {
+    if (!active) return;
+    if (enabled()) resume();
+    else halt();
+  }).observe(document.documentElement, {
     attributes: true,
     attributeFilter: ["data-theme"],
   });
 
-  window.addEventListener("resize", resize);
+  // 给 canvas.width 赋值会清空画布：动态模式下一帧自然补上，静态模式必须立刻补画
+  window.addEventListener("resize", () => {
+    if (!enabled()) return; // 浅色下不画，尺寸等切回深色时由 resume() 重算
+    resize();
+    if (reduce) draw(0, 0);
+  });
   document.addEventListener("visibilitychange", () => {
-    if (document.hidden) {
-      if (raf) { cancelAnimationFrame(raf); raf = 0; }
-    } else if (!reduce && !raf && active) {
-      frame(performance.now());
-    }
+    if (!active) return;
+    if (enabled()) resume();
+    else halt();
   });
 
   return { start, stop };
@@ -3113,7 +3173,7 @@ function initDotGrid() {
 (async function init() {
   hardenSecretInputs();
   applyTheme(currentTheme(), false); // 主题已由 index.html 头部脚本定好，这里只同步按钮文案
-  dotGridCtl = initDotGrid();
+  constellationCtl = initConstellation();
   if (!state.token) return show("loginView");
   try {
     await afterLogin();
