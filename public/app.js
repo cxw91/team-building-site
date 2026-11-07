@@ -590,8 +590,8 @@ function renderFamRow() {
   const div = document.createElement("div");
   div.className = "fam-row";
   div.innerHTML =
-    `<input class="fam-name" placeholder="家庭 / 小组名称" />` +
-    `<input class="fam-members" placeholder="成员姓名，用逗号分隔（可留空）" />` +
+    `<input class="fam-name" placeholder="家庭 / 小组名称" autocomplete="off" />` +
+    `<input class="fam-members" placeholder="成员姓名，用逗号分隔（可留空）" autocomplete="off" />` +
     `<button class="link" data-action="del-fam-row">移除</button>`;
   return div;
 }
@@ -656,7 +656,7 @@ function renderProjects() {
     if (state.editingProject === p.id) {
       return `<div class="proj-card">
         <div class="main">
-          <input id="proj-edit-name-${p.id}" value="${esc(p.name)}" />
+          <input id="proj-edit-name-${p.id}" value="${esc(p.name)}" autocomplete="off" />
         </div>
         <div class="actions">
           <button class="primary shrink" data-action="save-project" data-id="${p.id}">保存</button>
@@ -1238,7 +1238,7 @@ function budgetPanelHtml(o) {
       ${
         state.editingBudget
           ? `<div class="form-row">
-               <input id="budget-input" type="number" min="0" step="0.01" inputmode="decimal" placeholder="预算金额（元）" value="${hasBudget ? o.budget : ""}" />
+               <input id="budget-input" type="number" min="0" step="0.01" inputmode="decimal" placeholder="预算金额（元）" value="${hasBudget ? o.budget : ""}" autocomplete="off" />
                <button class="primary shrink" data-action="save-budget">保存</button>
                <button class="ghost shrink" data-action="cancel-budget">取消</button>
              </div>
@@ -1279,7 +1279,7 @@ function bonusPanelHtml() {
   if (state.editingBonus) {
     return `${head}
       <div class="form-row">
-        <input id="bonus-input" type="number" min="0" step="0.01" inputmode="decimal" placeholder="奖金金额（元）" value="${has ? pool : ""}" />
+        <input id="bonus-input" type="number" min="0" step="0.01" inputmode="decimal" placeholder="奖金金额（元）" value="${has ? pool : ""}" autocomplete="off" />
         <button class="primary shrink" data-action="save-bonus">保存</button>
         <button class="ghost shrink" data-action="cancel-bonus">取消</button>
       </div>
@@ -1507,7 +1507,7 @@ function paintMembers() {
            </div>`
         : state.editingFamily === f.id
           ? `<div class="section-head">
-               <input id="fam-edit-name-${f.id}" value="${esc(f.name)}" style="max-width:220px" />
+               <input id="fam-edit-name-${f.id}" value="${esc(f.name)}" style="max-width:220px" autocomplete="off" />
                <span>
                  <button class="primary shrink" data-action="save-family" data-id="${f.id}">保存</button>
                  <button class="ghost shrink" data-action="cancel-family-edit">取消</button>
@@ -1525,8 +1525,8 @@ function paintMembers() {
           if (isMine && state.editingMember === m.id) {
             return `<div class="row">
               <div class="main form-row" style="gap:8px">
-                <input id="mem-edit-name-${m.id}" value="${esc(m.name)}" placeholder="姓名" style="max-width:180px" />
-                <input id="mem-edit-note-${m.id}" value="${esc(m.note)}" placeholder="备注（忌口/过敏）" style="max-width:240px" />
+                <input id="mem-edit-name-${m.id}" value="${esc(m.name)}" placeholder="姓名" style="max-width:180px" autocomplete="off" />
+                <input id="mem-edit-note-${m.id}" value="${esc(m.note)}" placeholder="备注（忌口/过敏）" style="max-width:240px" autocomplete="off" />
               </div>
               <button class="primary shrink" data-action="save-member" data-id="${m.id}">保存</button>
               <button class="ghost shrink" data-action="cancel-member-edit">取消</button>
@@ -1545,8 +1545,8 @@ function paintMembers() {
         ${list.length ? rows : '<div class="empty">暂无成员</div>'}
         ${isMine
           ? `<div class="form-row" style="margin-top:10px">
-               <input id="mem-name-${f.id}" placeholder="成员姓名（可一次填多个，用逗号分隔）" />
-               <input id="mem-note-${f.id}" placeholder="备注（忌口/过敏）" />
+               <input id="mem-name-${f.id}" placeholder="成员姓名（可一次填多个，用逗号分隔）" autocomplete="off" />
+               <input id="mem-note-${f.id}" placeholder="备注（忌口/过敏）" autocomplete="off" />
                <button class="ghost shrink" data-action="add-member" data-fid="${f.id}">添加</button>
              </div>`
           : '<p class="hint" style="margin:8px 0 0">只可查看，若要管理请先切换到该家庭</p>'}
@@ -1556,7 +1556,7 @@ function paintMembers() {
   const addFamily = `<div class="section">
     <div class="section-head"><span class="title">新增家庭 / 小组</span></div>
     <div class="form-row">
-      <input id="new-family-in-app" placeholder="家庭 / 小组名称" />
+      <input id="new-family-in-app" placeholder="家庭 / 小组名称" autocomplete="off" />
       <button class="ghost shrink" data-action="add-family-app">新增家庭</button>
     </div>
     <p class="hint" style="margin:8px 0 0">结算按家庭数均分，新增或删除家庭会直接影响每家应摊金额。</p>
@@ -1599,8 +1599,8 @@ return `<div class="section${isMine ? "" : " readonly"}">
           : '<div class="empty">暂无</div>'}
         ${isMine
           ? `<div class="form-row" style="margin-top:10px">
-               <input id="carry-name" placeholder="物品名称" />
-               <input id="carry-qty" class="shrink" style="flex:0 0 90px" placeholder="数量" />
+               <input id="carry-name" placeholder="物品名称" autocomplete="off" />
+               <input id="carry-qty" class="shrink" style="flex:0 0 90px" placeholder="数量" autocomplete="off" />
                <button class="ghost shrink" data-action="add-carry">添加</button>
              </div>`
           : '<p class="hint" style="margin-top:8px">仅本家庭可编辑，其他家庭只读</p>'}
@@ -1633,9 +1633,9 @@ function paintShopping() {
         <span class="hint">${waiting} 项待购 · ${claimed} 项已被接单</span>
       </div>
       <div class="form-row">
-        <input id="shop-name" placeholder="采购项名称" />
-        <input id="shop-qty" class="shrink" style="flex:0 0 70px" placeholder="数量" />
-        <input id="shop-unit" class="shrink" style="flex:0 0 70px" placeholder="单位" />
+        <input id="shop-name" placeholder="采购项名称" autocomplete="off" />
+        <input id="shop-qty" class="shrink" style="flex:0 0 70px" placeholder="数量" autocomplete="off" />
+        <input id="shop-unit" class="shrink" style="flex:0 0 70px" placeholder="单位" autocomplete="off" />
         <button class="ghost shrink" data-action="add-shop">添加</button>
       </div>
       <p class="hint" style="margin:8px 0 0">名称不能重复；数量和单位可修改</p>
@@ -2031,7 +2031,7 @@ $("#content").innerHTML = `
           <button class="combo-toggle" type="button" data-action="toggle-suggest" aria-expanded="false" aria-label="展开或收起物品名称候选" title="展开或收起候选"><svg class="combo-caret" aria-hidden="true" focusable="false" width="16" height="16"><use href="#icon-chevron"></use></svg></button>
           <ul class="combo-list" id="pur-suggest" role="listbox" aria-label="物品名称候选" hidden></ul>
         </div>
-        <input id="pur-amount" class="shrink" style="flex:0 0 90px" type="number" min="0" step="0.01" placeholder="金额" />
+        <input id="pur-amount" class="shrink" style="flex:0 0 90px" type="number" min="0" step="0.01" placeholder="金额" autocomplete="off" />
         <button class="ghost shrink" data-action="add-purchase">登记</button>
       </div>
 <p class="hint" style="margin:8px 0 0"></p>
@@ -2815,9 +2815,9 @@ function renderPcList() {
     .map((r) => {
       if (pcEditing === r.id) {
         return `<div class="pc-row">
-          <input id="pc-edit-pw-${r.id}" value="${esc(r.passcode)}" placeholder="口令" />
-          <input id="pc-edit-adminpw-${r.id}" value="${esc(r.admin_passcode)}" placeholder="管理员密码" />
-          <input id="pc-edit-name-${r.id}" value="${esc(r.name)}" placeholder="备注名（可选）" />
+          <input id="pc-edit-pw-${r.id}" value="${esc(r.passcode)}" placeholder="口令" autocomplete="off" />
+          <input id="pc-edit-adminpw-${r.id}" value="${esc(r.admin_passcode)}" placeholder="管理员密码" autocomplete="off" />
+          <input id="pc-edit-name-${r.id}" value="${esc(r.name)}" placeholder="备注名（可选）" autocomplete="off" />
           <button class="primary shrink" data-pc-action="save" data-id="${r.id}">保存</button>
           <button class="ghost shrink" data-pc-action="cancel">取消</button>
         </div>`;
@@ -3169,9 +3169,38 @@ function initConstellation() {
   return { start, stop };
 }
 
+// ---------- 关闭浏览器表单数据保存与输入建议 ----------
+// 站点里的输入框多数由 JS 模板动态生成，逐个模板写 autocomplete 容易漏；这里在页面启动和
+// 每次 DOM 重建后统一补齐：普通字段 off（不记忆、不弹历史建议），口令字段 new-password
+// （Chrome 会忽略 password 字段上的 off），并打上常见密码管理器的忽略标记。
+// 静态 HTML 与所有模板仍各自显式声明，本函数只作兜底，保证以后新增字段不会重新漏配。
+function disableAutofill(root) {
+  if (!root || !root.querySelectorAll) return;
+  const nodes = (root.matches && root.matches("input, select, textarea") ? [root] : [])
+    .concat([...root.querySelectorAll("input, select, textarea")]);
+  for (const el of nodes) {
+    const secret = el.type === "password" || el.classList.contains("secret-masked");
+    const want = secret ? "new-password" : "off";
+    if (el.getAttribute("autocomplete") !== want) el.setAttribute("autocomplete", want);
+    // 第三方密码管理器会无视 autocomplete，靠这组 data-* 标记才不会在输入框旁弹面板
+    if (!el.hasAttribute("data-lpignore")) el.setAttribute("data-lpignore", "true");
+    if (!el.hasAttribute("data-1p-ignore")) el.setAttribute("data-1p-ignore", "");
+    if (!el.hasAttribute("data-form-type")) el.setAttribute("data-form-type", "other");
+  }
+}
+function watchAutofill() {
+  disableAutofill(document);
+  new MutationObserver((records) => {
+    for (const r of records) {
+      for (const n of r.addedNodes) if (n.nodeType === 1) disableAutofill(n);
+    }
+  }).observe(document.body, { childList: true, subtree: true });
+}
+
 // ---------- 启动 ----------
 (async function init() {
   hardenSecretInputs();
+  watchAutofill();
   applyTheme(currentTheme(), false); // 主题已由 index.html 头部脚本定好，这里只同步按钮文案
   constellationCtl = initConstellation();
   if (!state.token) return show("loginView");
