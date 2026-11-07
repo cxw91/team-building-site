@@ -23,6 +23,13 @@
 -- （后端首次运行也会自动补建，见 functions/api/[[path]].js 的 ensureSchema）：
 --   ALTER TABLE projects ADD COLUMN bonus REAL NOT NULL DEFAULT 0;
 
+-- 从「任务奖金版」升级到「家庭人数 + 分摊方式版」：不必重建，按顺序执行以下三行。
+-- 后端首次请求也会自动补两列，并且只在 member_count 是本次新建时才回填一次历史人数；
+-- 若选择手工执行，请务必按下面的顺序，先补列、再回填，避免把用户主动设成 0 人的家庭改回旧人数。
+--   ALTER TABLE families ADD COLUMN member_count INTEGER NOT NULL DEFAULT 0;
+--   ALTER TABLE projects ADD COLUMN split_mode TEXT NOT NULL DEFAULT 'family';
+--   UPDATE families SET member_count = (SELECT COUNT(*) FROM members m WHERE m.family_id = families.id);
+
 -- 口令（租户）：一个口令对应一份独立的项目数据；登录某口令只能看到它名下的项目。
 -- 口令的新增 / 修改 / 删除需要管理权限密码（ADMIN_PASSCODE），在登录页即可操作。
 CREATE TABLE IF NOT EXISTS passcodes (
@@ -34,6 +41,8 @@ CREATE TABLE IF NOT EXISTS passcodes (
 );
 
 -- 团建项目（顶层容器）
+-- 项目名唯一性由接口层按 passcode_id 校验（去首尾空格 + 忽略英文大小写），
+-- 刻意不建 UNIQUE 索引：历史库里可能已有重名项目，加索引会让升级 SQL 失败、也不会自动改历史名称。
 CREATE TABLE IF NOT EXISTS projects (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   name       TEXT NOT NULL,
@@ -42,20 +51,26 @@ status     TEXT NOT NULL DEFAULT '进行中',        -- 进行中 / 已结束
   budget     REAL NOT NULL DEFAULT 0,              -- 项目预算（元）；0 表示未设置（页面显示「无」）
   bonus      REAL NOT NULL DEFAULT 0,              -- 任务奖金池（元）；0 表示未设置。由各家均摊出资，
                                                   -- 按「已完成采购」的任务数比例分配，计入结算应摊
+  split_mode TEXT NOT NULL DEFAULT 'family',       -- 分摊方式：family=按家庭数均分 / person=按人数均分
   passcode_id INTEGER,                             -- 归属口令（passcodes.id）：不同口令之间项目互相不可见
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- 家庭 / 小组（分摊与结算的基本单位，创建项目时手动添加）
+-- 人数直接登记在 member_count，备注（忌口 / 过敏）是「每家一条」，存在 note。
+-- 家庭名唯一性由接口层按 project_id 校验（去首尾空格 + 忽略英文大小写），
+-- 同样刻意不建 UNIQUE 索引：历史库里可能已有重名家庭，加索引会让升级 SQL 失败。
 CREATE TABLE IF NOT EXISTS families (
-  id         INTEGER PRIMARY KEY AUTOINCREMENT,
-  project_id INTEGER NOT NULL,                     -- 所属项目
-  name       TEXT NOT NULL,
-  note       TEXT NOT NULL DEFAULT '',
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id   INTEGER NOT NULL,                   -- 所属项目
+  name         TEXT NOT NULL,
+  note         TEXT NOT NULL DEFAULT '',           -- 忌口 / 过敏 / 特殊需求（家庭级一条）
+  member_count INTEGER NOT NULL DEFAULT 0,        -- 该家庭人数，0～999；按人数均分时的权重
+  created_at   TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
--- 成员（挂在家庭下，创建项目时手动添加，可随时修改 / 删除）
+-- 成员（历史表，只读保留）：旧版本按姓名逐条录入的数据仍留在这里，界面不再展示、也不再写入。
+-- 新版本的人数以 families.member_count 为准；升级时会把每个家庭的历史行数回填一次。
 CREATE TABLE IF NOT EXISTS members (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id INTEGER NOT NULL,                     -- 所属项目
@@ -67,6 +82,8 @@ CREATE TABLE IF NOT EXISTS members (
 );
 
 -- 携带物品（各家庭自管自己的，全员可见）
+-- 名称唯一性由接口层校验：同一 project_id + family_id 内不重复（去空格 + 忽略大小写），
+-- 别家同名不冲突；历史库里可能已有重名，所以不建 UNIQUE 索引、也不改历史数据。
 CREATE TABLE IF NOT EXISTS carry_items (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
   project_id INTEGER NOT NULL,

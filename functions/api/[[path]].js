@@ -14,6 +14,7 @@
 //   3) 删除项目（历史项目）DELETE /api/projects/<id>
 //   4) 结束项目            PUT /api/projects/<id>  状态 进行中 → 已结束
 //   5) 重启已结束的项目    PUT /api/projects/<id>  状态 已结束 → 进行中
+//   6) 设置预算 / 任务奖金、切换结算分摊方式  PUT /api/projects/<id>
 //   调用时通过 X-Admin-Passcode 头传入，密码不对返回 403，未配置该环境变量返回 500。
 // 已结束项目只读：status 为「已结束」的项目，除读取外的一切写操作都返回 403；
 //   唯一出路是用管理权限密码把项目重启为「进行中」。
@@ -37,6 +38,15 @@ function toId(v) {
   const n = typeof v === "number" ? v : parseInt(String(v == null ? "" : v), 10);
   return Number.isFinite(n) && n > 0 ? n : null;
 }
+// 家庭人数：只允许 0～999 的整数。空值按 0（允许先建家庭、之后再补人数），
+// 非法值返回 null，由调用方回 400，避免把字符串/负数悄悄写进库里。
+function parseMemberCount(v) {
+  if (v === undefined || v === null || v === "") return 0;
+  const n = Number(v);
+  if (!Number.isInteger(n) || n < 0 || n > 999) return null;
+  return n;
+}
+const SPLIT_LABEL = { family: "按家庭数均分", person: "按人数均分" };
 
 // ---------- 鉴权与上下文 ----------
 async function sha256Hex(text) {
@@ -152,6 +162,26 @@ async function ensureSchema(env) {
     // 任务奖金版升级：projects 补 bonus 字段（已存在时会抛错，忽略即可）
     try {
       await env.DB.prepare("ALTER TABLE projects ADD COLUMN bonus REAL NOT NULL DEFAULT 0").run();
+    } catch {}
+    // 「家庭人数 + 分摊方式」版升级：
+    //   families.member_count —— 每个家庭的人数；备注复用已有的 families.note
+    //   projects.split_mode   —— family（按家庭数均分，默认）/ person（按人数均分）
+    // 历史库 upgrade 时，只有「这一列是本次真的新建的」才把旧 members 表的行数回填成人数，
+    // 否则用户主动设成 0 人的家庭会在每次进程启动时被旧数据改回去。
+    let memberCountAdded = false;
+    try {
+      await env.DB.prepare("ALTER TABLE families ADD COLUMN member_count INTEGER NOT NULL DEFAULT 0").run();
+      memberCountAdded = true;
+    } catch {}
+    if (memberCountAdded) {
+      try {
+        await env.DB
+          .prepare("UPDATE families SET member_count = (SELECT COUNT(*) FROM members m WHERE m.family_id = families.id)")
+          .run();
+      } catch {}
+    }
+    try {
+      await env.DB.prepare("ALTER TABLE projects ADD COLUMN split_mode TEXT NOT NULL DEFAULT 'family'").run();
     } catch {}
     const c = await env.DB.prepare("SELECT COUNT(*) AS c FROM passcodes").first();
     if ((!c || !c.c) && String(env.PASSCODE || "").trim()) {
@@ -336,7 +366,53 @@ export async function onRequest(context) {
   }
 }
 
-// ---------- 项目 ----------
+// ---------- 名称唯一性（项目名 / 家庭名） ----------
+// 统一归一化：去掉首尾空格 + 忽略英文大小写，与前端 String.trim().toLowerCase() 完全一致。
+// 把已有的名称取回来用 JS 比较，而不是 SQL 的 LOWER(TRIM(name))：SQLite 的 LOWER 只折叠
+// ASCII 大小写、TRIM 只去半角空格；每个口令下项目、每个项目下家庭都很少，全取回来更稳妥。
+// 历史库里可能已经有重名数据：因此不建唯一索引、也不改历史数据，只在「新增 / 改成重名」时拦下。
+function normalizeName(v) {
+  return String(v == null ? "" : v).trim().toLowerCase();
+}
+
+// 项目名：只在「同一个口令（passcode_id）」下唯一，不同口令各有一个「2026 秋季团建」互不冲突。
+async function findProjectNameConflict(env, tenant, name, excludeId = null) {
+  const rows = await env.DB.prepare("SELECT id, name FROM projects WHERE passcode_id = ?").bind(tenant).all();
+  const key = normalizeName(name);
+  return (
+    (rows.results || []).find(
+      (p) => Number(p.id) !== Number(excludeId) && normalizeName(p.name) === key
+    ) || null
+  );
+}
+function projectNameConflictError(dup) {
+  return err("该口令下已存在同名项目「" + dup.name + "」，请换一个名称", 409);
+}
+
+// 家庭名：只在「同一个项目（project_id）」内唯一，不同项目之间不冲突；改名时排除自己。
+async function findFamilyNameConflict(env, projectId, name, excludeId = null) {
+  const rows = await env.DB.prepare("SELECT id, name FROM families WHERE project_id = ?").bind(projectId).all();
+  const key = normalizeName(name);
+  return (
+    (rows.results || []).find(
+      (f) => Number(f.id) !== Number(excludeId) && normalizeName(f.name) === key
+    ) || null
+  );
+}
+function familyNameConflictError(dup) {
+  return err("本项目已存在同名家庭「" + dup.name + "」，请换一个名称", 409);
+}
+// 新建项目会一次性提交多行家庭：这些行还没入库，得在数组内部单独查一次重名。
+function duplicateFamilyInRows(rows) {
+  const seen = new Set();
+  for (const f of rows) {
+    const key = normalizeName(f.name);
+    if (seen.has(key)) return f;
+    seen.add(key);
+  }
+  return null;
+}
+
 async function handleProjects(env, method, id, request, me) {
   // 只认「本口令名下」的项目：不同口令之间互相看不到、也改不到，达到数据隔离
   const tenant = me ? me.id : null;
@@ -345,8 +421,8 @@ async function handleProjects(env, method, id, request, me) {
     const rows = await env.DB
       .prepare(
         `SELECT p.*,
-           (SELECT COUNT(*)                 FROM families f  WHERE f.project_id  = p.id) AS family_count,
-           (SELECT COUNT(*)                 FROM members m   WHERE m.project_id  = p.id) AS member_count,
+           (SELECT COUNT(*)                    FROM families f  WHERE f.project_id  = p.id) AS family_count,
+           (SELECT COALESCE(SUM(f.member_count), 0) FROM families f WHERE f.project_id = p.id) AS member_count,
            (SELECT COALESCE(SUM(amount), 0) FROM purchases u WHERE u.project_id  = p.id) AS total_amount
          FROM projects p
          WHERE p.passcode_id = ?
@@ -375,38 +451,44 @@ if (method === "POST") {
     const b = await readJson(request);
     const name = String((b && b.name) || "").trim();
     if (!name) return err("缺少项目名称");
+    // 同一口令下不允许重名：先判重，再校验家庭行、再写库（避免留下没有家庭的空壳项目）
+    const dup = await findProjectNameConflict(env, tenant, name);
+    if (dup) return projectNameConflictError(dup);
     const note = String((b && b.note) || "").trim();
     const families = Array.isArray(b && b.families) ? b.families : [];
 
-    const r = await env.DB
-      .prepare("INSERT INTO projects (name, note, status, passcode_id) VALUES (?, ?, ?, ?)")
-      .bind(name, note, "进行中", tenant)
-      .run();
-    const pid = r.meta.last_row_id;
-
-    // 创建项目时手动写入的家庭与成员（均可留空，之后再补）
-    let familyCount = 0;
-    let memberCount = 0;
+    // 创建项目时手动写入的家庭：每行是「家庭名称 + 人数 + 一条备注（忌口/过敏）」。
+    // 人数直接落在 families.member_count，不再按姓名逐条写 members 表；
+    // 历史项目里已有的 members 行保留不动，只是界面不再展示。
+    // 先在写库之前把全部行校验完：否则人数非法时项目已经建出来、却没有任何家庭。
+    const parsed = [];
     for (const f of families) {
       const famName = String((f && f.name) || "").trim();
       if (!famName) continue;
-      const fr = await env.DB
-        .prepare("INSERT INTO families (project_id, name, note) VALUES (?, ?, ?)")
-        .bind(pid, famName, String((f && f.note) || "").trim())
+      const n = parseMemberCount(f && f.member_count);
+      if (n === null) return err("家庭人数必须是 0～999 的整数");
+      parsed.push({ name: famName, note: String((f && f.note) || "").trim(), count: n });
+    }
+    // 同一个项目内家庭名不能重复：这次提交的各行之间也要互不相同，
+    // 同样在建项目之前拦下，避免留下「名字分不清」的半截数据。
+    const rowDup = duplicateFamilyInRows(parsed);
+    if (rowDup) return err("家庭名称「" + rowDup.name + "」重复了，请合并或修改其中一行", 409);
+
+    const r = await env.DB
+      .prepare("INSERT INTO projects (name, note, status, split_mode, passcode_id) VALUES (?, ?, ?, ?, ?)")
+      .bind(name, note, "进行中", "family", tenant)
+      .run();
+    const pid = r.meta.last_row_id;
+
+    let familyCount = 0;
+    let memberCount = 0;
+    for (const f of parsed) {
+      await env.DB
+        .prepare("INSERT INTO families (project_id, name, note, member_count) VALUES (?, ?, ?, ?)")
+        .bind(pid, f.name, f.note, f.count)
         .run();
       familyCount++;
-      const rawMembers = Array.isArray(f && f.members) ? f.members : [];
-      for (const m of rawMembers) {
-        const memName = String((typeof m === "string" ? m : (m && m.name) || "") || "").trim();
-        if (!memName) continue;
-        const role = (typeof m === "object" && m && String(m.role || "").trim()) || "成员";
-        const memNote = (typeof m === "object" && m && String(m.note || "").trim()) || "";
-        await env.DB
-          .prepare("INSERT INTO members (project_id, family_id, name, role, note) VALUES (?, ?, ?, ?, ?)")
-          .bind(pid, fr.meta.last_row_id, memName, role, memNote)
-          .run();
-        memberCount++;
-      }
+      memberCount += f.count;
     }
     await addLog(env, pid, {
       familyId: null,
@@ -464,6 +546,21 @@ if (method === "POST") {
       const denied = requireProjectAdmin(request, me);
       if (denied) return denied;
     }
+    // 分摊方式：family=按家庭数均分 / person=按人数均分。项目级口径，所有家庭共用，
+    // 因此切换与设置预算 / 奖金同级别，需要本口令的管理员密码。老库没有该列时按 family 处理。
+    const modeWas = String(old.split_mode || "family") === "person" ? "person" : "family";
+    const hasMode = b.split_mode !== undefined && b.split_mode !== null && b.split_mode !== "";
+    let nextMode = modeWas;
+    if (hasMode) {
+      const m = String(b.split_mode).trim();
+      if (m !== "family" && m !== "person") return err("分摊方式只能是 family（按家庭数）或 person（按人数）");
+      nextMode = m;
+    }
+    const modeChanged = hasMode && nextMode !== modeWas;
+    if (modeChanged) {
+      const denied = requireProjectAdmin(request, me);
+      if (denied) return denied;
+    }
 
     // 已结束的项目只能查看：改名 / 改备注 / 改预算 / 再次结束都不允许
     const isRestart = old.status === "已结束" && nextStatus === "进行中";
@@ -477,9 +574,16 @@ if (method === "POST") {
       if (denied) return denied;
     }
 
+    // 改名也要过同一口令下的重名校验，且必须排除自己：
+    // 历史库里若已有同名项目，只改预算 / 状态（或原名保存）不应该被误拦，所以只在名称真的变了才查。
+    if (nextName !== old.name) {
+      const dup = await findProjectNameConflict(env, tenant, nextName, id);
+      if (dup) return projectNameConflictError(dup);
+    }
+
     await env.DB
-      .prepare("UPDATE projects SET name = ?, note = ?, status = ?, budget = ?, bonus = ? WHERE id = ?")
-      .bind(nextName, String(b.note ?? old.note), nextStatus, nextBudget, nextBonus, id)
+      .prepare("UPDATE projects SET name = ?, note = ?, status = ?, budget = ?, bonus = ?, split_mode = ? WHERE id = ?")
+      .bind(nextName, String(b.note ?? old.note), nextStatus, nextBudget, nextBonus, nextMode, id)
       .run();
     const fmtBudget = (v) => (Number(v) > 0 ? `¥${round2(v).toFixed(2)}` : "无");
     if (budgetChanged) {
@@ -500,6 +604,15 @@ if (method === "POST") {
         detail: `任务奖金 ${fmtBudget(bonusWas)} → ${fmtBudget(nextBonus)}`,
       });
     }
+    if (modeChanged) {
+      await addLog(env, id, {
+        familyId: null,
+        action: "修改分摊方式",
+        targetType: "project",
+        targetId: id,
+        detail: `${SPLIT_LABEL[modeWas]} → ${SPLIT_LABEL[nextMode]}`,
+      });
+    }
     if (nextStatus !== old.status) {
       await addLog(env, id, {
         familyId: null,
@@ -509,7 +622,8 @@ if (method === "POST") {
         detail: nextName,
       });
     }
-    if (!budgetChanged && nextStatus === old.status) {
+    // 已经为预算 / 奖金 / 分摊方式写过专门日志时，不再补一条泛泛的「修改项目」
+    if (!budgetChanged && !bonusChanged && !modeChanged && nextStatus === old.status) {
       await addLog(env, id, {
         familyId: null,
         action: "修改项目",
@@ -548,16 +662,21 @@ async function handleFamilies(env, method, id, request, projectId) {
   if (method === "POST") {
     const b = await readJson(request);
     if (!b || !String(b.name || "").trim()) return err("缺少家庭名称");
+    const count = parseMemberCount(b.member_count);
+    if (count === null) return err("家庭人数必须是 0～999 的整数");
+    const name = String(b.name).trim();
+    const dup = await findFamilyNameConflict(env, projectId, name);
+    if (dup) return familyNameConflictError(dup);
     const r = await env.DB
-      .prepare("INSERT INTO families (project_id, name, note) VALUES (?, ?, ?)")
-      .bind(projectId, String(b.name).trim(), String(b.note || ""))
+      .prepare("INSERT INTO families (project_id, name, note, member_count) VALUES (?, ?, ?, ?)")
+      .bind(projectId, name, String(b.note || "").trim(), count)
       .run();
     await addLog(env, projectId, {
       familyId: actorFamilyId(request),
       action: "新增家庭",
       targetType: "family",
       targetId: r.meta.last_row_id,
-      detail: String(b.name).trim(),
+      detail: `${name}（${count} 人）`,
     });
     return json({ ok: true, id: r.meta.last_row_id });
   }
@@ -568,16 +687,36 @@ async function handleFamilies(env, method, id, request, projectId) {
     const ownGuard = requireOwnFamily(request, id);
     if (ownGuard) return ownGuard;
     const b = (await readJson(request)) || {};
+    const nextName = String(b.name ?? old.name).trim() || old.name;
+    const nextNote = String(b.note ?? old.note ?? "").trim();
+    const hasCount = b.member_count !== undefined && b.member_count !== null && b.member_count !== "";
+    let nextCount = Math.max(0, Math.floor(Number(old.member_count) || 0));
+    if (hasCount) {
+      const c = parseMemberCount(b.member_count);
+      if (c === null) return err("家庭人数必须是 0～999 的整数");
+      nextCount = c;
+    }
+    // 只在名称真的变了才判重：只改人数 / 备注、或原名保存时放行，
+    // 历史库里已存在的重名家庭因此仍能正常维护自己的数据。
+    if (normalizeName(nextName) !== normalizeName(old.name)) {
+      const dup = await findFamilyNameConflict(env, projectId, nextName, id);
+      if (dup) return familyNameConflictError(dup);
+    }
     await env.DB
-      .prepare("UPDATE families SET name = ?, note = ? WHERE id = ? AND project_id = ?")
-      .bind(String(b.name ?? old.name).trim() || old.name, b.note ?? old.note, id, projectId)
+      .prepare("UPDATE families SET name = ?, note = ?, member_count = ? WHERE id = ? AND project_id = ?")
+      .bind(nextName, nextNote, nextCount, id, projectId)
       .run();
+    const parts = [];
+    if (nextName !== old.name) parts.push(`${old.name} → ${nextName}`);
+    if (hasCount && nextCount !== Math.max(0, Math.floor(Number(old.member_count) || 0)))
+      parts.push(`人数 ${Math.max(0, Math.floor(Number(old.member_count) || 0))} → ${nextCount}`);
+    if (nextNote !== String(old.note || "")) parts.push("备注已更新");
     await addLog(env, projectId, {
       familyId: actorFamilyId(request),
       action: "修改家庭",
       targetType: "family",
       targetId: id,
-      detail: old.name + " → " + String(b.name ?? old.name).trim(),
+      detail: parts.join(" · ") || nextName,
     });
     return json({ ok: true });
   }
@@ -607,7 +746,10 @@ async function handleFamilies(env, method, id, request, projectId) {
   return err("不支持的方法", 405);
 }
 
-// ---------- 成员（项目内，手动添加 / 修改 / 删除）----------
+// ---------- 成员（历史数据只读）----------
+// 成员已改为「按家庭登记人数 + 一条备注」，人数落在 families.member_count。
+// 旧 members 表里的姓名数据保留、GET 仍可查，但不再提供写入入口，避免绕过界面写出的
+// 匿名行与人数口径不一致。前端成员页也不再调用这些写接口。
 async function handleMembers(env, method, id, request, projectId) {
   if (method === "GET") {
     const rows = await env.DB
@@ -616,71 +758,8 @@ async function handleMembers(env, method, id, request, projectId) {
       .all();
     return json({ ok: true, data: rows.results });
   }
-  if (method === "POST") {
-    const b = await readJson(request);
-    const name = String((b && b.name) || "").trim();
-    const familyId = toId(b && b.family_id);
-    if (!name || !familyId) return err("请填写成员姓名并选择所属家庭");
-    const fam = await env.DB
-      .prepare("SELECT id FROM families WHERE id = ? AND project_id = ?")
-      .bind(familyId, projectId)
-      .first();
-    if (!fam) return err("所选家庭不属于当前项目", 400);
-    const ownGuard = requireOwnFamily(request, familyId);
-    if (ownGuard) return ownGuard;
-    const r = await env.DB
-      .prepare("INSERT INTO members (project_id, family_id, name, role, note) VALUES (?, ?, ?, ?, ?)")
-      .bind(projectId, familyId, name, String((b && b.role) || "成员"), String((b && b.note) || ""))
-      .run();
-    await addLog(env, projectId, {
-      familyId: actorFamilyId(request),
-      action: "新增成员",
-      targetType: "member",
-      targetId: r.meta.last_row_id,
-      detail: name,
-    });
-    return json({ ok: true, id: r.meta.last_row_id });
-  }
-  if (method === "PUT") {
-    if (!id) return err("缺少 id");
-    const old = await env.DB.prepare("SELECT * FROM members WHERE id = ? AND project_id = ?").bind(id, projectId).first();
-    if (!old) return err("成员不存在", 404);
-    const b = (await readJson(request)) || {};
-    const ownGuard = requireOwnFamily(request, old.family_id);
-    if (ownGuard) return ownGuard;
-    const nextFamily = b.family_id !== undefined ? toId(b.family_id) : old.family_id;
-    if (nextFamily && Number(nextFamily) !== Number(old.family_id)) {
-      return err("不能把成员移到其他家庭，其他家庭只能查看", 403);
-    }
-    const nextName = String(b.name ?? old.name).trim() || old.name;
-    await env.DB
-      .prepare("UPDATE members SET name = ?, role = ?, note = ?, family_id = ? WHERE id = ? AND project_id = ?")
-      .bind(nextName, b.role ?? old.role, b.note ?? old.note, nextFamily || old.family_id, id, projectId)
-      .run();
-    await addLog(env, projectId, {
-      familyId: actorFamilyId(request),
-      action: "修改成员",
-      targetType: "member",
-      targetId: id,
-      detail: old.name === nextName ? nextName : old.name + " → " + nextName,
-    });
-    return json({ ok: true });
-  }
-  if (method === "DELETE") {
-    if (!id) return err("缺少 id");
-    const old = await env.DB.prepare("SELECT * FROM members WHERE id = ? AND project_id = ?").bind(id, projectId).first();
-    if (!old) return err("成员不存在", 404);
-    const ownGuard = requireOwnFamily(request, old.family_id);
-    if (ownGuard) return ownGuard;
-    await env.DB.prepare("DELETE FROM members WHERE id = ? AND project_id = ?").bind(id, projectId).run();
-    await addLog(env, projectId, {
-      familyId: actorFamilyId(request),
-      action: "删除成员",
-      targetType: "member",
-      targetId: id,
-      detail: old.name,
-    });
-    return json({ ok: true });
+  if (method === "POST" || method === "PUT" || method === "DELETE") {
+    return err("成员已改为按「家庭人数」登记，请到成员页修改人数与备注", 403);
   }
   return err("不支持的方法", 405);
 }
@@ -706,16 +785,26 @@ async function handleCarryItems(env, method, id, request, projectId) {
       .bind(familyId, projectId)
       .first();
     if (!belong) return err("所选家庭不属于当前项目", 400);
+    // 携带物品名只在「同一家庭内」唯一：别家带「纸巾 / 矿泉水」不算冲突。
+    // 口径与项目名 / 家庭名一致（去空格 + 忽略大小写），用 normalizeName 在 JS 里比；
+    // 历史重名数据保留，只在新增时拦下，也不建唯一索引。
+    const name = String(b.name).trim();
+    const existing = await env.DB
+      .prepare("SELECT id, name FROM carry_items WHERE project_id = ? AND family_id = ?")
+      .bind(projectId, familyId)
+      .all();
+    const dup = (existing.results || []).find((x) => normalizeName(x.name) === normalizeName(name));
+    if (dup) return err("你家已添加同名物品「" + dup.name + "」，请直接修改它的数量或换个名称", 409);
     const r = await env.DB
       .prepare("INSERT INTO carry_items (project_id, name, quantity, family_id, status, note) VALUES (?, ?, ?, ?, ?, ?)")
-      .bind(projectId, String(b.name).trim(), b.quantity || "", familyId, b.status || "待带", b.note || "")
+      .bind(projectId, name, b.quantity || "", familyId, b.status || "待带", b.note || "")
       .run();
     await addLog(env, projectId, {
       familyId: myFamily,
       action: "新增携带物品",
       targetType: "carry_item",
       targetId: r.meta.last_row_id,
-      detail: String(b.name).trim(),
+      detail: name,
     });
     return json({ ok: true, id: r.meta.last_row_id });
   }
@@ -728,16 +817,26 @@ async function handleCarryItems(env, method, id, request, projectId) {
       return err("只能管理自己家庭的携带物品", 403);
     }
     const b = (await readJson(request)) || {};
+    // 数量是自由文本（「2 箱」「1 提」），只去首尾空格；留空表示清空数量。
+    const nextName = b.name !== undefined ? String(b.name).trim() || old.name : old.name;
+    const nextQty = b.quantity !== undefined ? String(b.quantity ?? "").trim() : String(old.quantity ?? "");
+    const nextStatus = b.status !== undefined ? b.status : old.status;
+    const nextNote = b.note !== undefined ? b.note : old.note;
     await env.DB
       .prepare("UPDATE carry_items SET name = ?, quantity = ?, status = ?, note = ? WHERE id = ? AND project_id = ?")
-      .bind(b.name ?? old.name, b.quantity ?? old.quantity, b.status ?? old.status, b.note ?? old.note, id, projectId)
+      .bind(nextName, nextQty, nextStatus, nextNote, id, projectId)
       .run();
+    // 日志写清改了什么：数量从「无」到「2 箱」、或从「2 箱」清空都能看出来
+    const parts = [];
+    if (nextQty !== String(old.quantity ?? "")) parts.push(`数量 ${old.quantity || "无"} → ${nextQty || "无"}`);
+    if (nextStatus !== old.status) parts.push(`状态 ${old.status} → ${nextStatus}`);
+    if (nextName !== old.name) parts.push(`${old.name} → ${nextName}`);
     await addLog(env, projectId, {
       familyId: myFamily,
       action: "修改携带物品",
       targetType: "carry_item",
       targetId: id,
-      detail: `${b.name ?? old.name}（${b.status ?? old.status}）`,
+      detail: parts.length ? `${nextName}：${parts.join(" · ")}` : nextName,
     });
     return json({ ok: true });
   }
@@ -1102,14 +1201,25 @@ function allocCents(poolCents, weights) {
 }
 
 async function computeSettlement(env, projectId) {
-  const fams = (await env.DB.prepare("SELECT id, name FROM families WHERE project_id = ? ORDER BY id").bind(projectId).all()).results;
+  const fams = (await env.DB.prepare("SELECT id, name, member_count FROM families WHERE project_id = ? ORDER BY id").bind(projectId).all()).results;
   const purs = (await env.DB.prepare("SELECT family_id, amount FROM purchases WHERE project_id = ?").bind(projectId).all()).results;
-  const project = (await env.DB.prepare("SELECT budget, bonus FROM projects WHERE id = ?").bind(projectId).first()) || {};
+  const project = (await env.DB.prepare("SELECT budget, bonus, split_mode FROM projects WHERE id = ?").bind(projectId).first()) || {};
 
   const round2 = (n) => Math.round(n * 100) / 100;
   // 全程用「分」做整数运算，避免 0.1+0.2 这类浮点误差影响差额与转账建议
   const totalCents = Math.round(purs.reduce((s, p) => s + (Number(p.amount) || 0), 0) * 100);
   const count = fams.length;
+
+  // 分摊口径：family = 每家 1 份；person = 按各家人数加权。
+  // 人数为 0 的家庭在按人数口径下应摊 0（权重 0），不会把别人该出的钱摊到自己头上；
+  // 若所有家庭都是 0 人，分母为 0，临时退回按家庭数均分并在结算页给出提示。
+  // split_mode 仍返回项目里存的 person，切换按钮不会因为兜底而跳回「按家庭数」。
+  const requestedMode = String(project.split_mode || "family") === "person" ? "person" : "family";
+  const people = fams.map((f) => Math.max(0, Math.floor(Number(f.member_count) || 0)));
+  const totalPeople = people.reduce((s, n) => s + n, 0);
+  const byPerson = requestedMode === "person" && totalPeople > 0;
+  const personFallback = requestedMode === "person" && !byPerson;
+  const shareWeights = byPerson ? people : new Array(count).fill(1);
 
   // 任务奖金口径：池子由各家均摊出资，再按「已完成采购」的任务数分配。
   // 只统计挂在某家名下的已购项——清单里登记采购时会自动把该项归到登记家庭，
@@ -1130,7 +1240,9 @@ async function computeSettlement(env, projectId) {
   // 没有任何家庭完成采购时，分配不成立：出资与获得都按 0 处理，结算口径与没有奖金时完全一致
   const bonusActive = bonusCents > 0 && count > 0 && totalDone > 0;
 
-  const shareBase = allocCents(totalCents, new Array(count).fill(1)); // 总花费按家庭数均分
+  const shareBase = allocCents(totalCents, shareWeights); // 总花费：按家庭数或按人数加权
+  // 任务奖金池的「出资」始终按家庭数均分（任务制与人数无关），只有总花费跟随分摊口径；
+  // 「获得」仍按各家已完成的采购任务数分配。
   const contribution = bonusActive ? allocCents(bonusCents, new Array(count).fill(1)) : new Array(count).fill(0);
   const earning = bonusActive ? allocCents(bonusCents, weights) : new Array(count).fill(0);
 
@@ -1147,6 +1259,7 @@ async function computeSettlement(env, projectId) {
     return {
       family_id: f.id,
       name: f.name,
+      member_count: people[i], // 结算页按人数口径时显示这一列
       paid: round2(paidC / 100),
       share: round2(shareC / 100),
       balance: round2(balanceC / 100),
@@ -1176,12 +1289,22 @@ async function computeSettlement(env, projectId) {
     if (creditors[j].amt <= 0.005) j++;
   }
 
+  const divisor = byPerson ? totalPeople : count;
+  const baseBasis = byPerson
+    ? `按人数均分（共 ${totalPeople} 人）`
+    : personFallback
+      ? "按人数均分（暂无人数，暂按家庭数均分）"
+      : "按家庭数均分";
   return {
     total: round2(totalCents / 100),
     family_count: count,
-    // 顶部 KPI 用的「每家应摊」：有生效的奖金时把池子也算进来
-    share: count ? round2((totalCents + (bonusActive ? bonusCents : 0)) / count / 100) : 0,
-    basis: bonusActive ? "按家庭数均分（已含任务奖金池）" : "按家庭数均分",
+    // 顶部 KPI：按家庭数时是「每家应摊」，按人数时是「人均应摊」；有生效的奖金时把池子也算进来
+    share: divisor ? round2((totalCents + (bonusActive ? bonusCents : 0)) / divisor / 100) : 0,
+    split_mode: requestedMode,        // 项目设置的分摊方式
+    effective_mode: byPerson ? "person" : "family", // 本次实际生效的口径（0 人兜底时不同）
+    person_count: totalPeople,
+    person_fallback: personFallback,
+    basis: baseBasis + (bonusActive ? "（已含任务奖金池）" : ""),
     bonus: round2(bonusCents / 100),
     bonus_active: bonusActive,
     bonus_total_done: totalDone,
@@ -1195,7 +1318,7 @@ async function computeSettlement(env, projectId) {
 async function computeOverview(env, projectId, project) {
   const total = ((await env.DB.prepare("SELECT COALESCE(SUM(amount), 0) AS s FROM purchases WHERE project_id = ?").bind(projectId).first()) || {}).s || 0;
   const famCount = ((await env.DB.prepare("SELECT COUNT(*) AS c FROM families WHERE project_id = ?").bind(projectId).first()) || {}).c || 0;
-  const memCount = ((await env.DB.prepare("SELECT COUNT(*) AS c FROM members WHERE project_id = ?").bind(projectId).first()) || {}).c || 0;
+  const memCount = ((await env.DB.prepare("SELECT COALESCE(SUM(member_count), 0) AS c FROM families WHERE project_id = ?").bind(projectId).first()) || {}).c || 0;
   const carryTotal = ((await env.DB.prepare("SELECT COUNT(*) AS c FROM carry_items WHERE project_id = ?").bind(projectId).first()) || {}).c || 0;
   const carryDone = ((await env.DB.prepare("SELECT COUNT(*) AS c FROM carry_items WHERE project_id = ? AND status = '已带'").bind(projectId).first()) || {}).c || 0;
   const shopTotal = ((await env.DB.prepare("SELECT COUNT(*) AS c FROM shopping_items WHERE project_id = ?").bind(projectId).first()) || {}).c || 0;

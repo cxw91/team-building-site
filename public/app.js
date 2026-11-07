@@ -9,8 +9,14 @@ const signedMoney = (n) => {
   if (Math.abs(v) < 0.005) return money(0);
   return (v > 0 ? "+" : "−") + money(Math.abs(v));
 };
-// 成员姓名一次可填多个：用逗号（中英文「,」「，」）分隔；同时兼容「、」等旧写法，避免历史习惯报错
-const splitNames = (s) => String(s || "").split(/[,，、;；/|\s]+/).map((x) => x.trim()).filter(Boolean);
+// 家庭人数：只允许 0～999 的整数，留空按 0 处理；返回 null 表示填了非法值（由调用方提示）。
+// 用 type="text" + inputmode="numeric" 而不是 type="number"，避免浏览器自带的加减箭头把数字挤到边缘。
+const parseCountInput = (v) => {
+  const s = String(v == null ? "" : v).trim();
+  if (!s) return 0;
+  if (!/^\d{1,3}$/.test(s)) return null;
+  return Number(s) <= 999 ? Number(s) : null;
+};
 
 // 几个反复出现的时长集中在这里，避免散落在各处
 const REVALIDATE_MS = 1000;  // 页签后台刷新的防抖窗口
@@ -51,9 +57,9 @@ const state = {
 lastLogId: 0,
   newLogs: 0,
   pending: null,        // 待确认删除：{ kind, id }
-  editingMember: null,  // 正在编辑的成员 id
-  editingFamily: null,  // 正在重命名的家庭 id
+  editingFamily: null,  // 正在编辑的家庭 id（名称 / 人数 / 备注一起改）
   editingShop: null,    // 正在改「数量 / 单位」的采购项 id
+  editingCarry: null,   // 正在改数量的携带物品 id
   editingPurchase: null,// 正在改金额的采购记录 id
   purMenuId: null,      // 采购明细里「更多操作」菜单展开在哪一行（只允许同时开一个）
 editingProject: null, // 正在改名的项目 id
@@ -61,11 +67,18 @@ editingProject: null, // 正在改名的项目 id
   editingBonus: false, // 概览里是否正在编辑任务奖金
   overview: null,       // 概览接口最近一次的返回，供预算面板局部重画（不重新拉数据）
   projectStatus: "",    // 当前项目状态：进行中 / 已结束
-  members: [],          // 成员页缓存：进入/退出编辑态、行内确认删除时就地重画，不重新拉接口
+  // 成员页改用 state.families（每家的人数与备注都在家庭上），不再单独缓存逐成员列表
   carryItems: [],       // 携带物品页缓存（同上）
   shoppingList: [],     // 采购清单页缓存（同上）
   purchases: [],        // 采购记录页缓存（同上）
+  // 采购清单筛选：只存内存。切页签保持，切项目 / 退出登录 / 刷新页面时复位，
+  // 免得带着上一个项目的条件进入新项目却看到空列表。
+  shopFilter: { status: "all", claim: "all", family: "all", q: "" },
+  shopFamilyOpen: false,// 家庭下拉面板是否展开（切页签回来按此恢复，不播入场动画）
 shopItems: [],        // 采购清单里的物品，供「登记一笔采购」的名称候选框使用
+  // 采购明细筛选：只有一个「按家庭」条件，约定与采购清单筛选一致（只存内存，切页签保持）
+  purFilter: { family: "all" },
+  purFamilyOpen: false, // 明细的家庭下拉面板是否展开（重建 DOM 后按此恢复）
   purSuggestOpen: false,// 名称候选框是否展开
   purActive: -1,        // 候选框里键盘高亮到第几项
   settlement: null,     // 结算页缓存（切页签时先画缓存、再后台刷新）
@@ -162,12 +175,12 @@ const BUSY_ACTIONS = {
   "confirm-del": "删除中…",
   "del-log": "删除中…",
   "clear-logs": "清除中…",
-  "add-member": "添加中…",
-  "save-member": "保存中…",
   "save-family": "保存中…",
+  "settle-mode": "切换中…",
   "add-family-app": "新增中…",
   "add-carry": "添加中…",
   "toggle-carry": "保存中…",
+  "save-carry-edit": "保存中…",
   "add-shop": "添加中…",
   "save-shop-edit": "保存中…",
   "save-purchase-amount": "保存中…",
@@ -576,10 +589,10 @@ function logout() {
   state.lastLogId = 0;
   state.newLogs = 0;
   state.pending = null;
-  state.editingMember = null;
   state.editingFamily = null;
   state.editingProject = null;
   state.editingShop = null;
+  state.editingCarry = null;
   state.editingPurchase = null;
   state.purMenuId = null;
   resetTabCache();
@@ -593,6 +606,62 @@ function logout() {
 }
 
 // ---------- 项目中心 ----------
+// 同一个口令（租户）下项目名不能重复：去掉首尾空格 + 忽略英文大小写，
+// 规则与后端 findProjectNameConflict() 保持一致。前端拿当前项目列表做即时预检，
+// 让用户在弹管理员密码之前就知道重名；多端 / 并发下的冲突仍以后端 409 为准。
+// excludeId 用于改名：排除自己，否则「原名保存」会被自己误判。
+function projectNameConflict(name, excludeId = null) {
+  const key = String(name || "").trim().toLowerCase();
+  return (
+    (state.projects || []).find(
+      (p) => Number(p.id) !== Number(excludeId) && String(p.name || "").trim().toLowerCase() === key
+    ) || null
+  );
+}
+function projectNameConflictMsg(dup) {
+  return `该口令下已存在同名项目「${dup.name}」，请换一个名称`;
+}
+
+// 家庭名唯一性：只在「当前项目内」生效，不同项目之间互不影响；
+// 规则与后端 findFamilyNameConflict() 一致（去空格 + 忽略英文大小写），改名时排除自己。
+// 前端先用缓存家庭列表即时预检，多端 / 并发下的冲突仍以后端 409 为准。
+function familyNameConflict(name, list = state.families, excludeId = null) {
+  const key = String(name || "").trim().toLowerCase();
+  return (
+    (list || []).find(
+      (f) => Number(f.id) !== Number(excludeId) && String(f.name || "").trim().toLowerCase() === key
+    ) || null
+  );
+}
+function familyNameConflictMsg(dup) {
+  return `家庭名重复`;
+}
+// 携带物品名只在「自己家庭内」唯一（别家带同名物品不算冲突）。
+// 规则与后端一致：去空格 + 忽略英文大小写；前端用缓存即时预检，并发以后端 409 为准。
+function carryNameConflict(name) {
+  const mine = Number(state.familyId);
+  if (!mine) return null;
+  const key = String(name || "").trim().toLowerCase();
+  return (
+    (state.carryItems || []).find(
+      (i) => Number(i.family_id) === mine && String(i.name || "").trim().toLowerCase() === key
+    ) || null
+  );
+}
+function carryNameConflictMsg(dup) {
+  return `物品名重复`;
+}
+// 新建项目弹窗里一次填多行：这些家庭还没入库，行与行之间也要互不相同
+function duplicateFamilyNameInRows(rows) {
+  const seen = new Set();
+  for (const f of rows) {
+    const key = String(f.name || "").trim().toLowerCase();
+    if (seen.has(key)) return f;
+    seen.add(key);
+  }
+  return null;
+}
+
 async function loadProjects() {
   state.projects = (await api("/projects", { withProject: false })).data || [];
   state.projectsAt = Date.now();
@@ -603,7 +672,8 @@ function renderFamRow() {
   div.className = "fam-row";
   div.innerHTML =
     `<input class="fam-name" placeholder="家庭 / 小组名称" autocomplete="off" />` +
-    `<input class="fam-members" placeholder="成员姓名，用逗号分隔（可留空）" autocomplete="off" />` +
+    `<input class="fam-count" placeholder="人数（可留空）" aria-label="家庭人数（可留空）" inputmode="numeric" autocomplete="off" />` +
+    `<input class="fam-note" placeholder="备注：忌口 / 过敏（可选）" autocomplete="off" />` +
     `<button class="link" data-action="del-fam-row">移除</button>`;
   return div;
 }
@@ -702,14 +772,23 @@ function renderProjects() {
 async function createProject() {
   const name = $("#projName").value.trim();
   if (!name) return ($("#homeMsg").textContent = "请输入项目名称");
+  // 先在弹管理员密码之前用本地项目列表拦一次重名；列表过期 / 别的设备刚建的同名，
+  // 由后端 409 兜底，错误信息会落到下面的 catch 写进 #homeMsg。
+  const dup = projectNameConflict(name);
+  if (dup) return ($("#homeMsg").textContent = projectNameConflictMsg(dup));
   const note = $("#projNote").value.trim();
-  const families = [...$("#famRows").querySelectorAll(".fam-row")]
-    .map((row) => ({
-      name: row.querySelector(".fam-name").value.trim(),
-      members: splitNames(row.querySelector(".fam-members").value),
-    }))
-    .filter((f) => f.name)
-    .map((f) => ({ name: f.name, members: f.members.map((n) => ({ name: n })) }));
+  // 每行是「家庭名称 + 人数 + 一条备注」；人数留空按 0 处理，非法值当场拦下。
+  const families = [];
+  for (const row of $("#famRows").querySelectorAll(".fam-row")) {
+    const name = row.querySelector(".fam-name").value.trim();
+    if (!name) continue;
+    const count = parseCountInput(row.querySelector(".fam-count").value);
+    if (count === null) return ($("#homeMsg").textContent = "家庭人数必须是 0～999 的整数");
+    families.push({ name, member_count: count, note: row.querySelector(".fam-note").value.trim() });
+  }
+  // 弹窗内几行家庭名不能互相重复：在弹管理员密码之前就提示，避免白输一次密码
+  const famDup = duplicateFamilyNameInRows(families);
+  if (famDup) return ($("#homeMsg").textContent = `家庭名称「${famDup.name}」重复了，请合并或修改其中一行`);
   const btn = $("#createProjBtn");
   if (btn.dataset.busy === "1") return; // 正在创建，忽略重复点击
   setBusy(btn, true, "创建中…");
@@ -750,11 +829,12 @@ function resetTabCache() {
   state.overview = null;
   state.settlement = null;
   state.logsList = [];
-  state.members = [];
   state.carryItems = [];
   state.shoppingList = [];
   state.purchases = [];
   state.shopItems = [];
+  resetShopFilter();
+  resetPurFilter();
 }
 
 async function enterProject(id, name) {
@@ -764,10 +844,10 @@ async function enterProject(id, name) {
   state.lastLogId = 0;
   state.newLogs = 0;
   state.pending = null;
-state.editingMember = null;
   state.editingFamily = null;
   state.editingBudget = false;
   state.editingShop = null;
+  state.editingCarry = null;
   state.editingPurchase = null;
   state.purMenuId = null;
   resetTabCache(); // 换项目：清掉上一个项目的页签缓存
@@ -989,6 +1069,7 @@ function openTab(tab) {
   if (tab !== "purchases") state.purSuggestOpen = false;
   // 行内编辑态也不跨页签：切走就当放弃修改，回来是干净的列表
   if (tab !== "shopping") state.editingShop = null;
+  if (tab !== "carry") state.editingCarry = null;
   if (tab !== "purchases") state.editingPurchase = null;
   if (tab !== "purchases") state.purMenuId = null;
   renderChrome();
@@ -1014,6 +1095,27 @@ document.addEventListener("visibilitychange", () => {
 // ---------- 表单状态快照 ----------
 // 页签后台刷新会整体重建 #content，重建前先记住每个输入框里的值，重建后原样填回，
 // 避免正在填写的内容被刷新清空。
+
+// 「程序性聚焦」：只把焦点放回输入框，不代表用户想展开名称候选面板。
+// 慢接口返回后 revalidate/render 会重建 #content，restoreForm 再把焦点填回 #pur-item；
+// 若这次 focus 照常触发 focusin 的自动展开，用户刚选完登记项、已经收起的候选面板
+// 就会过一会儿自己弹出来一次（线上反馈的正是这个，延迟越长越容易撞上）。
+let quietFocus = false;
+function focusQuietly(el) {
+  if (!el) return;
+  const prev = quietFocus;
+  quietFocus = true;
+  // 个别浏览器把 focus 事件推迟到下一拍才派发：给元素留一个一次性标记兜底，
+  // focusin 消费掉即可；setTimeout 只是防止「压根没派发 focus」时标记残留。
+  el.dataset.quietFocus = "1";
+  try {
+    el.focus({ preventScroll: true });
+  } finally {
+    quietFocus = prev;
+    setTimeout(() => { delete el.dataset.quietFocus; }, 0);
+  }
+}
+
 function snapshotForm() {
   const c = $("#content");
   if (!c) return null;
@@ -1022,6 +1124,9 @@ function snapshotForm() {
   c.querySelectorAll("input, select, textarea").forEach((el) => {
     const key = el.id || el.tagName + "#" + n;
     n++;
+    // 筛选控件的值以 state.shopFilter 为唯一来源（重绘时会按 state 重新渲染），
+    // 不参与快照：否则切项目复位条件后，旧值会被回填回来，和 state 打架。
+    if (el.hasAttribute("data-filter-state")) return;
     fields[key] = el.type === "checkbox" || el.type === "radio" ? (el.checked ? "1" : "0") : el.value;
   });
   const ae = document.activeElement;
@@ -1040,6 +1145,7 @@ function restoreForm(snap) {
   c.querySelectorAll("input, select, textarea").forEach((el) => {
     const key = el.id || el.tagName + "#" + n;
     n++;
+    if (el.hasAttribute("data-filter-state")) return; // 见 snapshotForm：筛选控件只认 state
     if (!(key in snap.fields)) return;
     const v = snap.fields[key];
     if (el.type === "checkbox" || el.type === "radio") el.checked = v === "1";
@@ -1050,7 +1156,7 @@ function restoreForm(snap) {
     const el = document.getElementById(f.key);
     if (el && c.contains(el)) {
       try {
-        el.focus({ preventScroll: true });
+        focusQuietly(el); // 回填焦点 ≠ 用户点开候选框，别让 focusin 顺手把面板展开
         if (typeof f.start === "number" && el.setSelectionRange) el.setSelectionRange(f.start, f.end);
       } catch {}
     }
@@ -1174,12 +1280,19 @@ async function prefetchRest() {
 }
 
 // 项目已结束：整页切成查看模式，禁掉一切编辑入口（后端也会拒）
+// 纯查看类控件（采购清单筛选条、空态里的「清除筛选」）带 data-readonly-keep，
+// 它们不改数据，只读时应当照常可用。列表局部重绘后也要再跑一次这个函数。
+function disableEditControlsIn(root) {
+  if (!isReadonly() || !root) return;
+  root.querySelectorAll("input, select, textarea, button").forEach((el) => {
+    if (el.hasAttribute("data-readonly-keep")) return;
+    el.disabled = true;
+  });
+}
 function applyReadonly() {
   const c = $("#content");
   if (!isReadonly()) return;
-  c.querySelectorAll("input, select, textarea, button").forEach((el) => {
-    el.disabled = true;
-  });
+  disableEditControlsIn(c);
   if (!c.querySelector(".banner")) {
     const b = document.createElement("div");
     b.className = "banner";
@@ -1388,9 +1501,9 @@ function paintOverview() {
     <div class="cards">
       <div class="card"><div class="num">${money(o.total_amount)}</div><div class="lbl">总花费</div></div>
       <div class="card"><div class="num">${hasBudget ? money(o.budget) : "无"}</div><div class="lbl">项目预算</div></div>
-      <div class="card"><div class="num">${st.family_count ? money(st.share) : "—"}</div><div class="lbl">每家应摊（${st.family_count} 家均分）</div></div>
+      <div class="card"><div class="num">${st.family_count ? money(st.share) : "—"}</div><div class="lbl">${st.split_mode === "person" ? `人均应摊（${Number(st.person_count) || 0} 人）` : `每家应摊（${st.family_count} 家均分）`}</div></div>
       <div class="card"><div class="num">${o.family_count}</div><div class="lbl">家庭数</div></div>
-      <div class="card"><div class="num">${o.member_count}</div><div class="lbl">成员数</div></div>
+      <div class="card"><div class="num">${o.member_count}</div><div class="lbl">总人数</div></div>
       <div class="card"><div class="num">${o.carry_done}/${o.carry_total}</div><div class="lbl">携带已带</div></div>
       <div class="card"><div class="num">${o.shopping_done}/${o.shopping_total}</div><div class="lbl">采购已购</div></div>
     </div>
@@ -1505,67 +1618,52 @@ function paintCurrentTab() {
 }
 
 async function fetchMembers() {
-  state.members = (await api("/members")).data || [];
+  // 人数与备注都挂在家庭上，成员页直接读 state.families；这里只需确保家庭列表是最新的。
+  await loadFamilies();
 }
 
-// 只重画成员页内容（用缓存数据），供纯前端切换调用
+// 只重画成员页内容（用 state.families 缓存），供纯前端切换调用。
+// 每个家庭是一张卡片：标题 + 「人数 / 备注」一行；自家可编辑名称、人数、备注，其他家庭只读。
+// 姓名不再录入也不再展示；历史 members 表里的姓名数据保留在库里，不影响这里的人数口径。
 function paintMembers() {
-  const mems = state.members || [];
   const mine = state.familyId;
   const groups = state.families
     .map((f) => {
-      const list = mems.filter((m) => m.family_id === f.id);
-      const isMine = f.id === mine;
+      const count = Math.max(0, Math.floor(Number(f.member_count) || 0));
+      const note = String(f.note || "").trim();
+      const isMine = Number(f.id) === Number(mine);
+      const editing = isMine && state.editingFamily === f.id;
       const head = !isMine
         ? `<div class="section-head">
-             <span class="title">${esc(f.name)}</span>
-             <span class="hint">${list.length} 人 · 其他家庭只读</span>
+             <span class="title">${esc(f.name)} <span class="ro-badge">其他家庭 · 只读</span></span>
+             <span class="hint">${count} 人</span>
            </div>`
-        : state.editingFamily === f.id
-          ? `<div class="section-head">
-               <input id="fam-edit-name-${f.id}" value="${esc(f.name)}" style="max-width:220px" autocomplete="off" />
-               <span>
-                 <button class="primary shrink" data-action="save-family" data-id="${f.id}">保存</button>
-                 <button class="ghost shrink" data-action="cancel-family-edit">取消</button>
-               </span>
-             </div>`
+        : editing
+          ? `<div class="section-head"><span class="title">编辑家庭</span><span class="hint">名称 / 人数 / 备注</span></div>`
           : `<div class="section-head">
                <span class="title">${esc(f.name)} <span class="mine">（我的家庭）</span></span>
-               <span class="hint">${list.length} 人
-                 <button class="link" data-action="edit-family" data-id="${f.id}">重命名</button>
+               <span class="hint">${count} 人
+                 <button class="link" data-action="edit-family" data-id="${f.id}">修改</button>
                  ${dangerCell("family", f.id, "del-family", "删除家庭")}
                </span>
              </div>`;
-      const rows = list
-        .map((m) => {
-          if (isMine && state.editingMember === m.id) {
-            return `<div class="row">
-              <div class="main form-row" style="gap:8px">
-                <input id="mem-edit-name-${m.id}" value="${esc(m.name)}" placeholder="姓名" style="max-width:180px" autocomplete="off" />
-                <input id="mem-edit-note-${m.id}" value="${esc(m.note)}" placeholder="备注（忌口/过敏）" style="max-width:240px" autocomplete="off" />
-              </div>
-              <button class="primary shrink" data-action="save-member" data-id="${m.id}">保存</button>
-              <button class="ghost shrink" data-action="cancel-member-edit">取消</button>
-            </div>`;
-          }
-          return `<div class="row">
-            <div class="main"><div class="name">${esc(m.name)}</div><div class="meta">${esc(m.role)}${m.note ? " · " + esc(m.note) : ""}</div></div>
-            ${isMine
-              ? `<button class="link" data-action="edit-member" data-id="${m.id}">修改</button>${dangerCell("member", m.id, "del-member")}`
-              : ""}
-          </div>`;
-        })
-        .join("");
+      const body = editing
+        ? `<div class="form-row fam-edit-row">
+             <input id="fam-edit-name-${f.id}" value="${esc(f.name)}" placeholder="家庭 / 小组名称" aria-label="家庭名称" autocomplete="off" />
+             <input id="fam-edit-count-${f.id}" value="${count}" placeholder="人数" inputmode="numeric" aria-label="成员人数" style="flex:0 0 92px" autocomplete="off" />
+             <input id="fam-edit-note-${f.id}" value="${esc(note)}" placeholder="备注：忌口 / 过敏" aria-label="忌口或过敏备注" autocomplete="off" />
+             <button class="primary shrink" data-action="save-family" data-id="${f.id}">保存</button>
+             <button class="ghost shrink" data-action="cancel-family-edit">取消</button>
+           </div>`
+        : `<div class="row fam-info-row">
+             <div class="main"><div class="name">成员人数：${count} 人</div>
+               <div class="meta">${note ? "忌口 / 过敏：" + esc(note) : "暂无忌口 / 过敏备注"}</div></div>
+             ${isMine ? "" : '<span class="tag off">只读</span>'}
+           </div>`;
       return `<div class="section${isMine ? "" : " readonly"}">
         ${head}
-        ${list.length ? rows : '<div class="empty">暂无成员</div>'}
-        ${isMine
-          ? `<div class="form-row" style="margin-top:10px">
-               <input id="mem-name-${f.id}" placeholder="成员姓名（可一次填多个，用逗号分隔）" autocomplete="off" />
-               <input id="mem-note-${f.id}" placeholder="备注（忌口/过敏）" autocomplete="off" />
-               <button class="ghost shrink" data-action="add-member" data-fid="${f.id}">添加</button>
-             </div>`
-          : '<p class="hint" style="margin:8px 0 0">只可查看，若要管理请先切换到该家庭</p>'}
+        ${body}
+        ${isMine && !editing ? '<p class="hint" style="margin:8px 0 0">人数会用于「按人数均分」结算口径，请在结算前核对。</p>' : ""}
       </div>`;
     })
     .join("");
@@ -1573,12 +1671,13 @@ function paintMembers() {
     <div class="section-head"><span class="title">新增家庭 / 小组</span></div>
     <div class="form-row">
       <input id="new-family-in-app" placeholder="家庭 / 小组名称" autocomplete="off" />
+      <input id="new-family-count" placeholder="人数" inputmode="numeric" aria-label="成员人数" style="flex:0 0 92px" autocomplete="off" />
+      <input id="new-family-note" placeholder="备注：忌口 / 过敏（可选）" autocomplete="off" />
       <button class="ghost shrink" data-action="add-family-app">新增家庭</button>
     </div>
-    <p class="hint" style="margin:8px 0 0">结算按家庭数均分，新增或删除家庭会直接影响每家应摊金额。</p>
   </div>`;
   $("#content").innerHTML =
-    (groups || '<div class="empty">本项目还没有家庭，先新增一个</div>') + addFamily;
+    (state.families.length ? groups : '<div class="empty">本项目还没有家庭，先新增一个</div>') + addFamily;
 }
 
 // ---------- 携带物品 ----------
@@ -1586,50 +1685,90 @@ async function fetchCarry() {
   state.carryItems = (await api("/carry-items")).data || [];
 }
 
+// 携带物品单行：只放开「数量」编辑，名称是添加时定的标识、不提供改名；
+// 别家的行只显示状态，不给「修改 / 删除」。编辑态复用 .row-edit / .shop-actions 的窄屏排版。
+// 物品信息区：名称与数量各自成列，多行之间上下左对齐（列起点由 .carry-line 的 grid 固定）。
+// 数量留空也保留「数量：未填」这一列，否则该行少一列会破坏与相邻行的对齐。
+function carryInfoHtml(i) {
+  const qty = String(i.quantity == null ? "" : i.quantity).trim();
+  return `<div class="main carry-info">
+    <div class="carry-line">
+      <div class="carry-cell carry-name"><span class="carry-label">物品名字：</span><span class="carry-val">${esc(i.name)}</span></div>
+      <div class="carry-cell carry-qty${qty ? "" : " is-empty"}"><span class="carry-label">数量：</span><span class="carry-val">${qty ? esc(qty) : "未填"}</span></div>
+    </div>
+    ${i.note ? `<div class="meta">${esc(i.note)}</div>` : ""}
+  </div>`;
+}
+function carryRowHtml(i, isMine) {
+  if (isMine && state.editingCarry === i.id) {
+    return `<div class="row shop-row row-edit">
+      <div class="main">
+        <div class="name">${esc(i.name)}</div>
+      </div>
+      <div class="edit-fields">
+        <input id="carry-edit-qty-${i.id}" class="shrink" value="${esc(i.quantity || "")}" placeholder="数量" aria-label="数量" autocomplete="off" />
+      </div>
+      <div class="edit-btns">
+        <button class="primary shrink" data-action="save-carry-edit" data-id="${i.id}">保存</button>
+        <button class="ghost shrink" data-action="cancel-carry-edit">取消</button>
+      </div>
+    </div>`;
+  }
+  return `<div class="row shop-row">
+    ${carryInfoHtml(i)}
+    <div class="shop-actions">
+      <button class="pill${i.status === "已带" ? " done" : ""}" ${isMine ? `data-action="toggle-carry" data-id="${i.id}" data-status="${i.status === "已带" ? "待带" : "已带"}"` : "disabled"}>
+        ${esc(i.status)}
+      </button>
+      ${isMine ? `<button class="link" data-action="edit-carry" data-id="${i.id}" title="修改这一项的数量（不改名称）">修改</button>` : ""}
+      ${isMine ? dangerCell("carry", i.id, "del-carry") : ""}
+    </div>
+  </div>`;
+}
+
 // 只重画携带物品页内容（用缓存数据）
 function paintCarry() {
   const items = state.carryItems || [];
   const mine = state.familyId;
+  // 整页重画前留住在编辑框里还没保存的数量；物品若已被删掉就退出编辑态
+  const editId = state.editingCarry;
+  let draft = null;
+  if (editId != null) {
+    const el = $("#carry-edit-qty-" + editId);
+    if (el) draft = el.value;
+    if (!items.some((i) => Number(i.id) === Number(editId))) state.editingCarry = null;
+  }
   const groups = state.families
     .map((f) => {
       const list = items.filter((i) => i.family_id === f.id);
       const isMine = f.id === mine;
 return `<div class="section${isMine ? "" : " readonly"}">
         <div class="section-head">
-          <span class="title">${esc(f.name)}${isMine ? ' <span class="mine">（我的家庭）</span>' : ""}</span>
+          <span class="title">${esc(f.name)}${isMine ? ' <span class="mine">（我的家庭）</span>' : ' <span class="ro-badge">其他家庭 · 只读</span>'}</span>
           <span class="hint">${list.length} 项</span>
         </div>
-        ${list.length
-          ? list
-              .map(
-                (i) => `<div class="row">
-                  <div class="main"><div class="name">${esc(i.name)} ${i.quantity ? '<span class="tag">' + esc(i.quantity) + "</span>" : ""}</div>
-                    ${i.note ? `<div class="meta">${esc(i.note)}</div>` : ""}</div>
-                  <button class="pill${i.status === "已带" ? " done" : ""}" ${isMine ? `data-action="toggle-carry" data-id="${i.id}" data-status="${i.status === "已带" ? "待带" : "已带"}"` : "disabled"}>
-                    ${esc(i.status)}
-                  </button>
-                  ${isMine ? dangerCell("carry", i.id, "del-carry") : ""}
-                </div>`
-              )
-              .join("")
-          : '<div class="empty">暂无</div>'}
+        ${list.length ? list.map((i) => carryRowHtml(i, isMine)).join("") : '<div class="empty">暂无</div>'}
         ${isMine
           ? `<div class="form-row" style="margin-top:10px">
                <input id="carry-name" placeholder="物品名称" autocomplete="off" />
                <input id="carry-qty" class="shrink" style="flex:0 0 90px" placeholder="数量" autocomplete="off" />
                <button class="ghost shrink" data-action="add-carry">添加</button>
              </div>`
-          : '<p class="hint" style="margin-top:8px">仅本家庭可编辑，其他家庭只读</p>'}
+          : ''}
       </div>`;
     })
     .join("");
   const orphan = items.filter((i) => !i.family_id);
   const orphanHtml = orphan.length
     ? `<div class="section"><div class="section-head"><span class="title">未分配</span></div>${orphan
-        .map((i) => `<div class="row"><div class="main"><div class="name">${esc(i.name)}</div></div><span class="tag">${esc(i.status)}</span></div>`)
+        .map((i) => `<div class="row">${carryInfoHtml(i)}<span class="tag">${esc(i.status)}</span></div>`)
         .join("")}</div>`
     : "";
   $("#content").innerHTML = (groups || "") + orphanHtml;
+  if (draft != null && state.editingCarry != null) {
+    const el = $("#carry-edit-qty-" + editId);
+    if (el) el.value = draft;
+  }
 }
 
 // ---------- 采购清单 ----------
@@ -1637,16 +1776,156 @@ async function fetchShopping() {
   state.shoppingList = (await api("/shopping-items")).data || [];
 }
 
-// 只重画采购清单页内容（用缓存数据）
+// ---------- 采购清单筛选 ----------
+// 条件只存在内存里：切页签保持，切项目 / 退出登录（resetTabCache）与刷新页面复位，
+// 免得带着上一个项目的条件进入新项目却看到空列表。
+function resetShopFilter() {
+  state.shopFilter = { status: "all", claim: "all", family: "all", q: "" };
+  state.shopFamilyOpen = false;
+}
+function shopFilterActive() {
+  const f = state.shopFilter || {};
+  return f.status !== "all" || f.claim !== "all" || f.family !== "all" || !!String(f.q || "").trim();
+}
+// 「接单」与「家庭」是同一件事的两个粒度，天然互斥：
+//   具体家庭 X 隐含「已接单且属于 X」；「未接单」没有家庭；「我家接单」等价于家庭=我家。
+// 按「用户这次改的是哪个条件」来联动，而不是事后无条件规范化——否则已选家庭时
+// 点「我家接单」，规范化会把用户刚点的 mine 又改回 claimed，点击等于没生效。
+function shopFilterDisabled() {
+  const f = state.shopFilter || {};
+  return {
+    family: f.claim === "unclaimed" || f.claim === "mine", // 家庭下拉禁用
+    claim: f.family !== "all" ? ["unclaimed", "mine"] : [], // 接单分段里禁用哪几项
+  };
+}
+function setShopFilter(patch) {
+  const f = Object.assign({}, state.shopFilter, patch);
+  if (patch.claim !== undefined) {
+    // 点「未接单 / 我家接单」→ 家庭归回全部家庭；点「全部 / 已接单」保留已选家庭（AND 语义一致）
+    if (f.claim === "unclaimed" || f.claim === "mine") f.family = "all";
+  } else if (patch.family !== undefined && f.family !== "all") {
+    // 选具体家庭 → 接单自动归「已接单」，不再与「未接单 / 我家接单」并存
+    f.claim = "claimed";
+  }
+  state.shopFilter = f;
+}
+function filteredShopping(items) {
+  const f = state.shopFilter || {};
+  // 搜索只匹配名称：数量 / 单位 / 备注 / 接单家庭名都不参与
+  const q = String(f.q || "").trim().toLowerCase();
+  const mine = Number(state.familyId) || null;
+  return (items || []).filter((i) => {
+    if ((f.status === "待购" || f.status === "已购") && i.status !== f.status) return false;
+    const claimed = !!i.claimed_family_id;
+    if (f.claim === "unclaimed" && claimed) return false;
+    if (f.claim === "claimed" && !claimed) return false;
+    if (f.claim === "mine" && (!mine || Number(i.claimed_family_id) !== mine)) return false;
+    if (f.family !== "all" && (!claimed || Number(i.claimed_family_id) !== Number(f.family))) return false;
+    if (q && !String(i.name == null ? "" : i.name).toLowerCase().includes(q)) return false;
+    return true;
+  });
+}
+// 下拉：现有家庭 + 清单里仍挂着、但家庭可能已被删掉的接单方
+function shopFilterFamilies() {
+  const rows = (state.families || []).map((f) => ({ id: f.id, name: f.name }));
+  const known = new Set(rows.map((r) => Number(r.id)));
+  (state.shoppingList || []).forEach((i) => {
+    if (i.claimed_family_id && !known.has(Number(i.claimed_family_id))) {
+      known.add(Number(i.claimed_family_id));
+      rows.push({ id: i.claimed_family_id, name: i.claimed_family_name || "已移除的家庭" });
+    }
+  });
+  const cur = state.shopFilter && state.shopFilter.family;
+  if (cur !== "all" && !known.has(Number(cur))) rows.push({ id: cur, name: "已移除的家庭" });
+  return rows;
+}
+function shopSegHtml(key, label, opts) {
+  const f = state.shopFilter;
+  const dis = shopFilterDisabled();
+  const buttons = opts
+    .map(([v, text]) => {
+      const off = key === "claim" && dis.claim.includes(v);
+      return `<button type="button" class="seg-btn${f[key] === v ? " on" : ""}" data-action="shop-filter-${key}" data-v="${v}" aria-pressed="${f[key] === v ? "true" : "false"}"${off ? ' disabled title="与已选家庭互斥：先把家庭改回「全部家庭」"' : ""} data-readonly-keep>${text}</button>`;
+    })
+    .join("");
+  return `<div class="shop-filter-line shop-seg-line">
+    <span class="shop-filter-label">${label}</span>
+    <div class="shop-seg" role="group" aria-label="${label}筛选">${buttons}</div>
+  </div>`;
+}
+// 家庭下拉改为自绘：原生 <select> 的选项面板由系统绘制，深色主题下仍是白底，
+// 这里触发器与选项列表全部走主题令牌，浅 / 深两套配色都能对上。
+function shopFamilyLabel() {
+  const f = state.shopFilter;
+  if (f.family === "all") return "全部家庭";
+  const row = shopFilterFamilies().find((r) => String(r.id) === String(f.family));
+  return row ? row.name : "已移除的家庭";
+}
+function shopFamilyOptionsHtml() {
+  const f = state.shopFilter;
+  const opts = [{ id: "all", name: "全部家庭" }].concat(shopFilterFamilies());
+  return opts
+    .map((r) => {
+      const on = String(r.id) === String(f.family);
+      return `<button type="button" class="shop-select-opt${on ? " on" : ""}" role="menuitemradio" aria-checked="${on ? "true" : "false"}" data-action="shop-family-pick" data-v="${esc(r.id)}" data-readonly-keep>${esc(r.name)}</button>`;
+    })
+    .join("");
+}
+function shopFamilySignature() {
+  return shopFilterFamilies().map((r) => String(r.id) + ":" + r.name).join("|");
+}
+// 面板开合统一走这里：paint / 后台刷新重建 DOM 后按 state 恢复开合，
+// 不播入场动画、不抢焦点，避免切回本页时「闪一下」。
+function paintShopFamilyOpen(focus = false, animate = false) {
+  const menu = $("#shop-family-menu"), trigger = $("#shop-filter-family");
+  if (!menu || !trigger) return;
+  const want = !!state.shopFamilyOpen && !trigger.disabled;
+  menu.hidden = !want;
+  trigger.setAttribute("aria-expanded", want ? "true" : "false");
+  const sec = trigger.closest(".section");
+  if (sec) sec.classList.toggle("has-open-menu", want);
+  menu.classList.toggle("enter", want && animate);
+  if (want && focus) {
+    const cur = menu.querySelector(".shop-select-opt.on") || menu.querySelector(".shop-select-opt");
+    if (cur) cur.focus({ preventScroll: true });
+  }
+}
+function setShopFamilyOpen(open) {
+  const trigger = $("#shop-filter-family");
+  if (open && trigger && trigger.disabled) return;
+  state.shopFamilyOpen = !!open;
+  paintShopFamilyOpen(!!open, !!open);
+}
+function shopFilterBarHtml() {
+  const f = state.shopFilter;
+  const dis = shopFilterDisabled();
+  return `<div id="shop-filter" class="shop-filter" role="search" aria-label="采购清单筛选">
+    <div class="shop-filter-segs">
+      ${shopSegHtml("status", "状态", [["all", "全部"], ["待购", "待购"], ["已购", "已购"]])}
+      ${shopSegHtml("claim", "接单", [["all", "全部"], ["unclaimed", "未接单"], ["claimed", "已接单"], ["mine", "我家接单"]])}
+    </div>
+    <div class="shop-filter-line">
+      <div class="shop-select" id="shop-family-select">
+        <button type="button" class="shop-select-trigger" id="shop-filter-family" aria-label="按接单家庭筛选" aria-haspopup="menu" aria-expanded="false" data-action="shop-family-toggle" data-readonly-keep data-filter-state${dis.family ? ' disabled title="「未接单 / 我家接单」下没有接单家庭可筛"' : ""}>
+          <span class="shop-select-value" id="shop-family-value">${esc(shopFamilyLabel())}</span>
+          <span class="shop-select-caret" aria-hidden="true"></span>
+        </button>
+        <div class="shop-select-menu" id="shop-family-menu" role="menu" aria-label="选择接单家庭" hidden>${shopFamilyOptionsHtml()}</div>
+      </div>
+      <input id="shop-filter-q" placeholder="按名称搜索采购项" value="${esc(f.q || "")}" aria-label="按名称搜索采购项" autocomplete="off" data-readonly-keep data-filter-state />
+      <button type="button" class="ghost shrink" data-action="shop-filter-clear" data-readonly-keep${shopFilterActive() ? "" : " hidden"}>清除筛选</button>
+    </div>
+  </div>`;
+}
+
+// 采购清单外壳：表单与筛选条只在这里建一次，之后筛选只换 #shop-list，
+// 否则每敲一个搜索字都重建 #content，输入框会失焦、中文输入法组合会被打断。
 function paintShopping() {
-  const items = state.shoppingList || [];
-  const waiting = items.filter((i) => i.status === "待购").length;
-  const claimed = items.filter((i) => i.claimed_family_id).length;
   $("#content").innerHTML = `
     <div class="section">
       <div class="section-head">
         <span class="title">采购清单</span>
-        <span class="hint">${waiting} 项待购 · ${claimed} 项已被接单</span>
+        <span class="hint" id="shop-count"></span>
       </div>
       <div class="form-row">
         <input id="shop-name" placeholder="采购项名称" autocomplete="off" />
@@ -1654,62 +1933,148 @@ function paintShopping() {
         <input id="shop-unit" class="shrink" style="flex:0 0 70px" placeholder="单位" autocomplete="off" />
         <button class="ghost shrink" data-action="add-shop">添加</button>
       </div>
-      <p class="hint" style="margin:8px 0 0">名称不能重复；数量和单位可修改</p>
-      <div style="margin-top:10px">
-        ${items.length
-          ? items
-              .map((i) => {
-                // 编辑态：只放开「数量 / 单位」两个输入。名称是关联键（候选框、已购派生、老记录的按名匹配），
-                // 改名会断掉历史关联，所以这里连输入框都不给。
-                if (state.editingShop === i.id) {
-                  return `<div class="row shop-row row-edit">
-                    <div class="main">
-                      <div class="name">${esc(i.name)}</div>
-                      <div class="meta">修改数量 / 单位（所有家庭都能改）</div>
-                    </div>
-                    <div class="edit-fields">
-                      <input id="shop-edit-qty-${i.id}" class="shrink" value="${esc(i.quantity || "")}" placeholder="数量" inputmode="text" aria-label="数量" autocomplete="off" />
-                      <input id="shop-edit-unit-${i.id}" class="shrink" value="${esc(i.unit || "")}" placeholder="单位" aria-label="单位" autocomplete="off" />
-                    </div>
-                    <div class="edit-btns">
-                      <button class="primary shrink" data-action="save-shop-edit" data-id="${i.id}">保存</button>
-                      <button class="ghost shrink" data-action="cancel-shop-edit">取消</button>
-                    </div>
-                  </div>`;
-                }
-                // 名称同一行右侧显示「数量·单位」，接单信息（接单家庭标记 + 接单时间）单独排在下一行左对齐
-                const qty = [i.quantity && esc(i.quantity), i.unit && esc(i.unit)].filter(Boolean).join(" ");
-                const note = i.note && esc(i.note);
-                const metaParts = [];
-                if (claimInfo(i)) metaParts.push(claimInfo(i));
-                if (i.claimed_at) metaParts.push(`<span class="m">接单于 ${fmtTime(i.claimed_at)}</span>`);
-                if (note) metaParts.push(`<span class="m">${note}</span>`);
-                const metaHtml = metaParts.length ? `<div class="meta shop-meta">${metaParts.join("")}</div>` : "";
-                return `<div class="row shop-row">
-                  <div class="main">
-                    <div class="shop-head">
-                      <div class="name">${esc(i.name)}</div>
-                      ${qty ? `<span class="shop-qty">${qty}</span>` : ""}
-                    </div>
-                    ${metaHtml}
-                  </div>
-                  <div class="shop-actions">
-                    ${shopStatusCell(i)}
-                    <button class="link" data-action="edit-shop" data-id="${i.id}" title="修改这一项的数量和单位（不改名称）">修改</button>
-                    ${
-                      i.status === "已购"
-                        ? // 已经登记过采购记录的项不能删：删除控件保持占用但不可用，原因写进 title / aria-label，
-                          // 页面下方的规则说明里也写清「删掉采购记录即可恢复可删除」。删掉记录后 status 回「待购」，删除自动恢复可用。
-                          `<button class="link" data-action="del-shop" data-id="${i.id}" disabled aria-disabled="true" title="这一项已经登记过采购记录，不能删除；删掉对应的采购记录后它会回到「未接单 + 待购」，那时才能删" aria-label="删除不可用：这一项已经登记过采购记录，删掉对应的采购记录后即可删除">删除</button>`
-                        : dangerCell("shopping", i.id, "del-shop")
-                    }${claimAction(i)}
-                  </div>
-                </div>`;
-              })
-              .join("")
-          : '<div class="empty">清单为空</div>'}
+      ${shopFilterBarHtml()}
+      <div id="shop-list" style="margin-top:10px"></div>
+    </div>`;
+  renderShopRows();
+}
+
+// 单行模板
+function shopRowHtml(i) {
+  // 编辑态：只放开「数量 / 单位」两个输入。名称是关联键（候选框、已购派生、老记录的按名匹配），
+  // 改名会断掉历史关联，所以这里连输入框都不给。
+  if (state.editingShop === i.id) {
+    return `<div class="row shop-row row-edit">
+      <div class="main">
+        <div class="name">${esc(i.name)}</div>
+        <div class="meta">修改数量 / 单位（所有家庭都能改）</div>
+      </div>
+      <div class="edit-fields">
+        <input id="shop-edit-qty-${i.id}" class="shrink" value="${esc(i.quantity || "")}" placeholder="数量" inputmode="text" aria-label="数量" autocomplete="off" />
+        <input id="shop-edit-unit-${i.id}" class="shrink" value="${esc(i.unit || "")}" placeholder="单位" aria-label="单位" autocomplete="off" />
+      </div>
+      <div class="edit-btns">
+        <button class="primary shrink" data-action="save-shop-edit" data-id="${i.id}">保存</button>
+        <button class="ghost shrink" data-action="cancel-shop-edit">取消</button>
       </div>
     </div>`;
+  }
+  // 名称同一行右侧显示「数量·单位」，接单信息（接单家庭标记 + 接单时间）单独排在下一行左对齐
+  const qty = [i.quantity && esc(i.quantity), i.unit && esc(i.unit)].filter(Boolean).join(" ");
+  const note = i.note && esc(i.note);
+  const metaParts = [];
+  if (claimInfo(i)) metaParts.push(claimInfo(i));
+  if (i.claimed_at) metaParts.push(`<span class="m">接单于 ${fmtTime(i.claimed_at)}</span>`);
+  if (note) metaParts.push(`<span class="m">${note}</span>`);
+  const metaHtml = metaParts.length ? `<div class="meta shop-meta">${metaParts.join("")}</div>` : "";
+  return `<div class="row shop-row">
+    <div class="main">
+      <div class="shop-head">
+        <div class="name">${esc(i.name)}</div>
+        ${qty ? `<span class="shop-qty">${qty}</span>` : ""}
+      </div>
+      ${metaHtml}
+    </div>
+    <div class="shop-actions">
+      ${shopStatusCell(i)}
+      <button class="link" data-action="edit-shop" data-id="${i.id}" title="修改这一项的数量和单位（不改名称）">修改</button>
+      ${
+        i.status === "已购"
+          ? // 已经登记过采购记录的项不能删：删除控件保持占用但不可用，原因写进 title / aria-label，
+            // 页面下方的规则说明里也写清「删掉采购记录即可恢复可删除」。删掉记录后 status 回「待购」，删除自动恢复可用。
+            `<button class="link" data-action="del-shop" data-id="${i.id}" disabled aria-disabled="true" title="这一项已经登记过采购记录，不能删除；删掉对应的采购记录后它会回到「未接单 + 待购」，那时才能删" aria-label="删除不可用：这一项已经登记过采购记录，删掉对应的采购记录后即可删除">删除</button>`
+          : dangerCell("shopping", i.id, "del-shop")
+      }${claimAction(i)}
+    </div>
+  </div>`;
+}
+
+// 只重画列表行 + 计数 + 控件状态；输入区完全不动，所以焦点不会丢。
+// force=true 用于「清除筛选 / 新增项后复位」这类显式动作：此时允许回写搜索框的值。
+function renderShopRows(force = false) {
+  const list = $("#shop-list");
+  if (!list) return;
+  const all = state.shoppingList || [];
+  const shown = filteredShopping(all);
+  // 编辑态跨重绘：被筛掉就退出编辑；仍匹配则把未保存的数量 / 单位回填，别让用户白填
+  const editId = state.editingShop;
+  let draft = null;
+  if (editId != null) {
+    const q = $("#shop-edit-qty-" + editId), u = $("#shop-edit-unit-" + editId);
+    if (q && u) draft = { qty: q.value, unit: u.value };
+    if (!shown.some((i) => Number(i.id) === Number(editId))) state.editingShop = null;
+  }
+  list.innerHTML = shown.length
+    ? shown.map(shopRowHtml).join("")
+    : `<div class="empty shop-empty">${all.length ? "没有符合条件的采购项" : "清单为空"}</div>`;
+  if (draft && state.editingShop != null) {
+    const q = $("#shop-edit-qty-" + editId), u = $("#shop-edit-unit-" + editId);
+    if (q && u) { q.value = draft.qty; u.value = draft.unit; }
+  }
+  const waiting = shown.filter((i) => i.status === "待购").length;
+  const claimed = shown.filter((i) => i.claimed_family_id).length;
+  const count = $("#shop-count");
+  if (count) {
+    count.textContent = shopFilterActive()
+      ? `显示 ${shown.length} / 共 ${all.length} 项 · ${waiting} 项待购 · ${claimed} 项已被接单`
+      : `共 ${all.length} 项 · ${waiting} 项待购 · ${claimed} 项已被接单`;
+  }
+  syncShopFilterControls(force);
+  disableEditControlsIn(list); // 局部重绘出的新控件也要遵守只读
+}
+
+function syncShopFilterControls(force = false) {
+  const f = state.shopFilter;
+  const bar = $("#shop-filter");
+  if (!bar) return;
+  const dis = shopFilterDisabled();
+  // 分段按钮：选中态 + 互斥禁用态。禁用项永远不会被选中（setShopFilter 保证），
+  // 所以不会出现「选中且置灰」的怪状态。
+  bar.querySelectorAll("[data-action='shop-filter-status'], [data-action='shop-filter-claim']").forEach((b) => {
+    const key = b.dataset.action === "shop-filter-status" ? "status" : "claim";
+    const on = f[key] === b.dataset.v;
+    const off = key === "claim" && dis.claim.includes(b.dataset.v);
+    b.classList.toggle("on", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.disabled = off;
+    if (off) b.title = "与已选家庭互斥：先把家庭改回「全部家庭」";
+    else if (key === "claim") b.removeAttribute("title");
+  });
+  const trigger = $("#shop-filter-family");
+  if (trigger) {
+    trigger.disabled = dis.family;
+    if (dis.family) trigger.title = "「未接单 / 我家接单」下没有接单家庭可筛，先切回「全部」或「已接单」";
+    else trigger.removeAttribute("title");
+    const label = $("#shop-family-value");
+    if (label) label.textContent = shopFamilyLabel();
+  }
+  // 家庭列表只在内容变化时重建选项，避免每次筛选都打断面板里的键盘焦点
+  const menu = $("#shop-family-menu");
+  if (menu) {
+    const sig = shopFamilySignature();
+    if (menu.dataset.sig !== sig) {
+      const active = document.activeElement;
+      const activeV = active && active.classList && active.classList.contains("shop-select-opt") ? active.dataset.v : null;
+      menu.dataset.sig = sig;
+      menu.innerHTML = shopFamilyOptionsHtml();
+      if (activeV) {
+        const back = [...menu.querySelectorAll(".shop-select-opt")].find((o) => o.dataset.v === activeV);
+        if (back) back.focus({ preventScroll: true });
+      }
+    }
+    menu.querySelectorAll(".shop-select-opt").forEach((o) => {
+      const on = String(o.dataset.v) === String(f.family);
+      o.classList.toggle("on", on);
+      o.setAttribute("aria-checked", on ? "true" : "false");
+    });
+  }
+  paintShopFamilyOpen(); // 恢复开合（不抢焦点、不播入场动画）
+  const q = $("#shop-filter-q");
+  // 正在逐字输入的搜索框不回写：输入法组合过程中 value 可能领先 state 一拍。
+  // 但「清除筛选」等显式复位必须强制回写，否则框里还留着旧关键词、state 却已清空。
+  if (q && q.value !== String(f.q || "") && (force || document.activeElement !== q)) q.value = f.q || "";
+  const clear = bar.querySelector("[data-action='shop-filter-clear']");
+  if (clear) clear.hidden = !shopFilterActive();
 }
 
 // ---------- 物品名称候选框（自绘下拉 · 只能选、不能新增） ----------
@@ -1729,15 +2094,20 @@ function setSuggestOpen(open, animate = true) {
   const box = $("#pur-suggest"), input = $("#pur-item"), toggle = $("#pur-combo .combo-toggle");
   if (!box || !input) return;
   const want = !!open;
-  // 面板「实际」是否已经展开：不能只看 state —— 整页重建后 state 可能还停在 true，
-  // 而新节点自带 hidden，那种情况必须真的展开一次。
-  const isOpen = !box.hidden && !!state.purSuggestOpen;
+  // 以「DOM 实际开合」为准：整页重建后新节点自带 hidden，state 可能还停在 true。
+  // 若把 state 也掺进判断，重建后调 setSuggestOpen(false) 会被误判成「本来就收着」而直接
+  // 返回，true 就一直留在 state 里；下一轮 captureSuggestOpen() 会当成「用户正开着」把面板
+  // 恢复成打开 —— 这也是「面板自己弹出来」的一条隐蔽路径。
+  const isOpen = !box.hidden;
   // 已经处于目标状态就直接返回：不重填列表、更不重播入场动画。
   // 点输入框会先触发 focusin（开一次），松手后再触发 click（又调一次）；
   // 第二次如果照旧从 .enter 重来，刚淡入一两帧的面板会被拉回 translateY(-6px) scale(.97)，
   // 观感就是面板「抖一下」（实测 opacity 0 → 0.25 → 0 → 0.76 → 1）。
   // 三角按钮同样是两次调用，只是都落在同一帧内，所以那边看不出问题。
-  if (want === isOpen) return;
+  if (want === isOpen) {
+    state.purSuggestOpen = want; // 幂等返回前把 state 对齐 DOM，杜绝上面的状态漂移
+    return;
+  }
   state.purSuggestOpen = want;
   if (state.purSuggestOpen) {
     // 输入框只是展示位（选中后会被填上名称），不能拿它的值当搜索词：
@@ -1779,7 +2149,10 @@ function setSuggestOpen(open, animate = true) {
 // 重画内容区（后台刷新、切页签后的补画、局部重画）都会重建 #content，采购记录页的名称候选框
 // 会被顺手收起。用户正开着候选框时先记下这个状态，重画完再展开，避免「刚点开就自己消失」。
 function captureSuggestOpen() {
-  return state.tab === "purchases" && !!state.purSuggestOpen;
+  if (state.tab !== "purchases") return false;
+  // 记用户「实际看到」的开合：state 可能与重建后的新节点短暂不一致，DOM 才作准。
+  const box = $("#pur-suggest");
+  return !!(box && !box.hidden);
 }
 function restoreSuggestOpen(keep) {
   // 重建后的恢复：不播入场动画，否则面板会重新淡入 = 闪一下。
@@ -1804,10 +2177,15 @@ function chooseSuggestActive() {
   return true;
 }
 $("#content").addEventListener("focusin", (e) => {
-  // 已经展开时不再重开：后台刷新重建 #content 后，restoreForm 会把焦点回填到这个输入框，
-  // 同样会触发 focusin；若无条件重开，就等于把刚恢复好的面板再重建 + 重播一次入场动画，
-  // 观感正是「切到本页后面板闪一下」。
-  if (e.target.id === "pur-item" && !state.purSuggestOpen) setSuggestOpen(true);
+  if (e.target.id !== "pur-item") return;
+  // 程序性聚焦（后台刷新回填焦点、选完候选项后把焦点放回输入框）不等于用户想展开面板：
+  // 直接忽略，否则慢接口返回后用户已经收起的候选面板会自己再弹出来一次。
+  // 已经展开时也不重开：重开会重建列表 + 重播入场动画，观感就是「面板闪一下」。
+  if (quietFocus || e.target.dataset.quietFocus) {
+    delete e.target.dataset.quietFocus;
+    return;
+  }
+  if (!state.purSuggestOpen) setSuggestOpen(true);
 });
 $("#content").addEventListener("focusout", (e) => {
   if (e.target.id !== "pur-item") return;
@@ -1872,8 +2250,8 @@ function placeTaskTip(row, tip, clientX) {
 }
 
 $("#content").addEventListener("keydown", (e) => {
-  // 行内编辑（采购项数量/单位、采购记录金额）：回车 = 保存，Esc = 取消，和旁边的按钮等价
-  if (/^(shop-edit-qty|shop-edit-unit|pur-edit-amount)-/.test(e.target.id || "")) {
+  // 行内编辑（采购项数量/单位、携带物品数量、采购记录金额）：回车 = 保存，Esc = 取消，和旁边的按钮等价
+  if (/^(shop-edit-qty|shop-edit-unit|carry-edit-qty|pur-edit-amount)-/.test(e.target.id || "")) {
     if (e.key !== "Enter" && e.key !== "Escape") return;
     e.preventDefault();
     const row = e.target.closest(".row-edit");
@@ -2013,6 +2391,153 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closePurMenu();
 });
 
+// ---------- 采购明细筛选（只有「按家庭」一个条件） ----------
+// 约定与采购清单筛选一致：条件只存内存，切页签保持，切项目 / 退出登录 / 刷新页面复位。
+// 作用范围只限「采购明细」列表与它的计数；上方「各家采购金额」是全项目预算口径，
+// 本身已按家庭分列，始终按全部家庭汇总，不随筛选变化。
+function resetPurFilter() {
+  state.purFilter = { family: "all" };
+  state.purFamilyOpen = false;
+}
+function purFilterActive() {
+  const f = state.purFilter || {};
+  return !!f.family && String(f.family) !== "all";
+}
+function purMatches(p) {
+  return !purFilterActive() || Number(p.family_id) === Number(state.purFilter.family);
+}
+function filteredPurchases(list) {
+  return (list || []).filter(purMatches);
+}
+// 选项：项目内全部家庭 + 明细里出现过、但家庭可能已被移除的登记方
+function purFilterFamilies() {
+  const rows = (state.families || []).map((f) => ({ id: f.id, name: f.name }));
+  const known = new Set(rows.map((r) => Number(r.id)));
+  (state.purchases || []).forEach((p) => {
+    if (p.family_id && !known.has(Number(p.family_id))) {
+      known.add(Number(p.family_id));
+      rows.push({ id: p.family_id, name: "已移除的家庭" });
+    }
+  });
+  const cur = (state.purFilter || {}).family;
+  if (purFilterActive() && !known.has(Number(cur))) rows.push({ id: cur, name: "已移除的家庭" });
+  return rows;
+}
+function purFamilyLabel() {
+  if (!purFilterActive()) return "全部家庭";
+  const row = purFilterFamilies().find((r) => String(r.id) === String(state.purFilter.family));
+  return row ? row.name : "已移除的家庭";
+}
+function purFamilyOptionsHtml() {
+  const cur = (state.purFilter || {}).family;
+  return [{ id: "all", name: "全部家庭" }]
+    .concat(purFilterFamilies())
+    .map((r) => {
+      const on = String(r.id) === String(cur);
+      return `<button type="button" class="shop-select-opt${on ? " on" : ""}" role="menuitemradio" aria-checked="${on ? "true" : "false"}" data-action="pur-family-pick" data-v="${esc(r.id)}" data-readonly-keep>${esc(r.name)}</button>`;
+    })
+    .join("");
+}
+function purFamilySignature() {
+  return purFilterFamilies().map((r) => String(r.id) + ":" + r.name).join("|");
+}
+// 复用采购清单那套自绘下拉：原生 <select> 的选项面板由系统绘制，深色主题下仍是白底
+function paintPurFamilyOpen(focus = false, animate = false) {
+  const menu = $("#pur-family-menu"), trigger = $("#pur-filter-family");
+  if (!menu || !trigger) return;
+  const want = !!state.purFamilyOpen && !trigger.disabled;
+  menu.hidden = !want;
+  trigger.setAttribute("aria-expanded", want ? "true" : "false");
+  const sec = trigger.closest(".section");
+  if (sec) sec.classList.toggle("has-open-menu", want);
+  menu.classList.toggle("enter", want && animate);
+  if (want && focus) {
+    const cur = menu.querySelector(".shop-select-opt.on") || menu.querySelector(".shop-select-opt");
+    if (cur) cur.focus({ preventScroll: true });
+  }
+}
+function setPurFamilyOpen(open) {
+  const trigger = $("#pur-filter-family");
+  if (open && trigger && trigger.disabled) return;
+  state.purFamilyOpen = !!open;
+  paintPurFamilyOpen(!!open, !!open);
+}
+function purFilterBarHtml() {
+  return `<div id="pur-filter" class="pur-filter" role="search" aria-label="采购明细按家庭筛选">
+    <span class="pur-filter-label">家庭</span>
+    <div class="shop-select pur-select" id="pur-family-select">
+      <button type="button" class="shop-select-trigger" id="pur-filter-family" aria-label="按登记家庭筛选采购明细" aria-haspopup="menu" aria-expanded="false" data-action="pur-family-toggle" data-readonly-keep>
+        <span class="shop-select-value" id="pur-family-value">${esc(purFamilyLabel())}</span>
+        <span class="shop-select-caret" aria-hidden="true"></span>
+      </button>
+      <div class="shop-select-menu" id="pur-family-menu" role="menu" aria-label="选择登记家庭" hidden>${purFamilyOptionsHtml()}</div>
+    </div>
+    <button type="button" class="ghost shrink" data-action="pur-filter-clear" data-readonly-keep${purFilterActive() ? "" : " hidden"}>清除筛选</button>
+  </div>`;
+}
+function syncPurFilterControls() {
+  const bar = $("#pur-filter"), trigger = $("#pur-filter-family");
+  if (!bar || !trigger) return;
+  const val = $("#pur-family-value");
+  if (val) val.textContent = purFamilyLabel();
+  const menu = $("#pur-family-menu");
+  if (menu) {
+    const sig = purFamilySignature();
+    if (menu.dataset.sig !== sig) {
+      const active = document.activeElement;
+      const activeV = active && active.classList && active.classList.contains("shop-select-opt") ? active.dataset.v : null;
+      menu.dataset.sig = sig;
+      menu.innerHTML = purFamilyOptionsHtml();
+      if (activeV) {
+        const back = [...menu.querySelectorAll(".shop-select-opt")].find((o) => o.dataset.v === activeV);
+        if (back) back.focus({ preventScroll: true });
+      }
+    }
+    const cur = (state.purFilter || {}).family;
+    menu.querySelectorAll(".shop-select-opt").forEach((o) => {
+      const on = String(o.dataset.v) === String(cur);
+      o.classList.toggle("on", on);
+      o.setAttribute("aria-checked", on ? "true" : "false");
+    });
+  }
+  const clear = bar.querySelector("[data-action='pur-filter-clear']");
+  if (clear) clear.hidden = !purFilterActive();
+  paintPurFamilyOpen(); // 重建后按 state 恢复开合，不抢焦点、不播入场动画
+}
+// 选家庭只重画明细行 + 计数 + 控件状态，筛选条本身不动，也不重建上方三张卡片
+// （整页重画会让卡片的光斑 / 边框动效重播，观感就是「闪一下」）。
+function renderPurRows() {
+  const rows = $("#pur-rows");
+  if (!rows) return;
+  const all = state.purchases || [];
+  const shown = filteredPurchases(all);
+  // 编辑态跨重绘：被筛掉就退出编辑；仍匹配则把未保存的金额回填
+  const editId = state.editingPurchase;
+  let draft = null;
+  if (editId != null) {
+    const el = $("#pur-edit-amount-" + editId);
+    if (el) draft = el.value;
+    if (!shown.some((p) => Number(p.id) === Number(editId))) state.editingPurchase = null;
+  }
+  state.purMenuId = null; // 行重建后旧菜单 DOM 已不存在
+  rows.innerHTML = shown.length
+    ? shown.map(purchaseRowHtml).join("")
+    : `<div class="empty pur-empty">${all.length ? "这个家庭还没有采购记录" : "暂无采购记录"}</div>`;
+  if (draft != null && state.editingPurchase != null) {
+    const el = $("#pur-edit-amount-" + editId);
+    if (el) el.value = draft;
+  }
+  const count = $("#pur-count");
+  if (count) {
+    const sum = shown.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+    count.textContent = purFilterActive()
+      ? `显示 ${shown.length} / 共 ${all.length} 笔 · 合计 ${money(sum)}`
+      : `${all.length} 笔`;
+  }
+  syncPurFilterControls();
+  disableEditControlsIn(rows); // 局部重绘出的新控件也要遵守只读
+}
+
 // 「各家采购金额」下面那排家庭标签
 function famSummaryHtml(perFamily) {
   if (!state.families.length) return '<span class="hint">还没有家庭</span>';
@@ -2059,7 +2584,8 @@ $("#content").innerHTML = `
     </div>
     <div class="section">
       <div class="section-head"><span class="title">采购明细</span><span class="hint" id="pur-count">${list.length} 笔</span></div>
-      <div id="pur-rows">${list.length ? list.map(purchaseRowHtml).join("") : '<div class="empty">暂无采购记录</div>'}</div>
+      ${purFilterBarHtml()}
+      <div id="pur-rows"></div>
     </div>`;
   // DOM 已重建。若重建前候选面板是打开的，把它恢复到打开状态并重新填充候选项，
   // 这样后台刷新 / 轮询不会把用户正在做的选择打断。
@@ -2069,6 +2595,9 @@ $("#content").innerHTML = `
     state.purSuggestOpen = true;
     setSuggestOpen(true, false);
   }
+  // 按当前筛选条件填充明细：条件存在 state 里，切页签 / 后台刷新重建 DOM 后仍一致。
+  // 同时按 state.purFamilyOpen 静态恢复下拉开合（不播入场动画，避免闪烁）。
+  renderPurRows();
 }
 
 // 登记成功后【就地】把新行插到采购明细顶部，并更新两处汇总 —— 不再整页重建 #content。
@@ -2095,10 +2624,21 @@ function applyPurchaseAdded(rec) {
   const count = $("#pur-count");
   if (!rows || !count) return false;
 
-  const empty = rows.querySelector(".empty");
-  if (empty) empty.remove();
-  rows.insertAdjacentHTML("afterbegin", purchaseRowHtml(rec));
-  count.textContent = state.purchases.length + " 笔";
+  // 新登记的一笔若不匹配当前家庭筛选，清掉条件并提示，避免「登记成功却看不到」
+  let cleared = false;
+  if (purFilterActive() && !purMatches(rec)) {
+    resetPurFilter();
+    cleared = true;
+    toast("已清除家庭筛选，以便显示刚登记的这笔采购");
+  }
+  if (cleared || purFilterActive()) {
+    renderPurRows(); // 筛选变化 / 生效时统一按条件重画，计数与筛选条一并同步
+  } else {
+    const empty = rows.querySelector(".empty");
+    if (empty) empty.remove();
+    rows.insertAdjacentHTML("afterbegin", purchaseRowHtml(rec));
+    count.textContent = state.purchases.length + " 笔";
+  }
 
   const summary = $("#pur-summary");
   if (summary) {
@@ -2130,25 +2670,41 @@ function paintSettlement() {
   // 只要项目设置了任务奖金池（含尚未生效的情况），「每家结算」就补一列「任务奖金」（= 该家获得的奖金）。
   // 放在「应摊」之后，让「已垫付 + 任务奖金 − 应摊 = 差额」这条算式在同一行里直接可读。
   const showBonusCol = bonus > 0;
+  // 分摊方式：project.split_mode 决定，按人数口径时表格补一列人数、顶部 KPI 改「人均应摊」。
+  // person_fallback = 项目选了按人数但所有家庭都是 0 人，此时后端临时退回家数均分。
+  const byPerson = s.split_mode === "person";
+  const showPeopleCol = byPerson;
+  const shareLabel = byPerson
+    ? `人均应摊（共 ${Number(s.person_count) || 0} 人${bonusActive ? "，含奖金池" : ""}）`
+    : `每家应摊（${s.family_count} 家均分${bonusActive ? "，含奖金池" : ""}）`;
+  const modeSwitch = `<div class="split-switch" role="group" aria-label="结算分摊方式">
+      <span class="split-switch-label">分摊方式</span>
+      <div class="split-switch-seg">
+        <button type="button" class="seg-btn${byPerson ? "" : " on"}" data-action="settle-mode" data-v="family" aria-pressed="${byPerson ? "false" : "true"}" title="总花费按家庭数均分">按家庭数</button>
+        <button type="button" class="seg-btn${byPerson ? " on" : ""}" data-action="settle-mode" data-v="person" aria-pressed="${byPerson ? "true" : "false"}" title="总花费按各家庭人数加权均分">按人数</button>
+      </div>
+    </div>`;
   // 奖金明细按「获得」从多到少排，拿得多的排前面
   const bonusRows = detail
     .slice()
     .sort((a, b) => (Number(b.bonus_out) || 0) - (Number(a.bonus_out) || 0) || (Number(b.done) || 0) - (Number(a.done) || 0));
   $("#content").innerHTML = `
+    ${modeSwitch}
 <div class="cards">
       <div class="card"><div class="num">${money(s.total)}</div><div class="lbl">总花费</div></div>
-      <div class="card"><div class="num">${money(s.share)}</div><div class="lbl">每家应摊（${s.family_count} 家均分${bonusActive ? "，含奖金池" : ""}）</div></div>
+      <div class="card"><div class="num">${money(s.share)}</div><div class="lbl">${shareLabel}</div></div>
       ${bonus > 0 ? `<div class="card"><div class="num">${money(bonus)}</div><div class="lbl">任务奖金池${bonusActive ? `（已完成 ${s.bonus_total_done} 项）` : "（未生效）"}</div></div>` : ""}
     </div>
     <div class="section">
       <div class="section-head"><span class="title">每家结算</span><span class="hint">分摊口径：${esc(s.basis || "按家庭数均分")}</span></div>
       <table class="settle-table">
-        <thead><tr><th>家庭</th><th class="r">已垫付</th><th class="r">应摊</th>${showBonusCol ? '<th class="r">任务奖金</th>' : ""}<th class="r">差额</th></tr></thead>
+        <thead><tr><th>家庭</th>${showPeopleCol ? '<th class="r">人数</th>' : ""}<th class="r">已垫付</th><th class="r">应摊</th>${showBonusCol ? '<th class="r">任务奖金</th>' : ""}<th class="r">差额</th></tr></thead>
         <tbody>
           ${detail
             .map(
               (d) => `<tr>
                 <td>${esc(d.name)}</td>
+                ${showPeopleCol ? `<td class="r">${Number(d.member_count) || 0} 人</td>` : ""}
                 <td class="r">${money(d.paid)}</td>
                 <td class="r">${money(d.share)}</td>
                 ${showBonusCol ? `<td class="r">${money(d.bonus_out)}</td>` : ""}
@@ -2159,12 +2715,17 @@ function paintSettlement() {
         </tbody>
       </table>
       <p class="hint" style="margin-top:10px">差额为正 = 该家庭多垫付、应收回；为负 = 应补付。${
+        byPerson
+          ? "按人数均分：总花费按各家庭人数加权，人数为 0 的家庭应摊 0。"
+          : ""
+      }${
         bonusActive
           ? `差额 = 已垫付 + 任务奖金 − 应摊；应摊已含奖金池出资（每家 ${money(s.bonus_contribution)}）。`
           : bonus > 0
             ? "奖金池尚未生效（还没有已完成的采购任务），「任务奖金」列暂按 0 计。"
             : ""
       }</p>
+      ${s.person_fallback ? '<p class="hint split-fallback">当前项目还没有登记任何人数，已临时按家庭数均分；到「成员」页补上人数后会自动按人数计算。</p>' : ""}
     </div>
     ${
       bonus > 0
@@ -2250,6 +2811,92 @@ const PAINTERS = {
   logs: paintLogs,
 };
 
+// 采购清单筛选：逐字搜索只更新内存条件与列表行，筛选条本身原样保留，
+// 因此焦点、光标位置与中文输入法组合都不会被打断。家庭下拉改为自绘按钮，
+// 选择动作统一走 click 委托（shop-family-pick），不再有原生 change 事件。
+$("#content").addEventListener("input", (e) => {
+  if (!e.target || e.target.id !== "shop-filter-q") return;
+  setShopFilter({ q: e.target.value });
+  renderShopRows();
+});
+// 自绘家庭下拉的键盘操作：向下键打开、方向键在选项间移动、Esc 收起并归还焦点。
+$("#content").addEventListener("keydown", (e) => {
+  const trigger = $("#shop-filter-family"), menu = $("#shop-family-menu");
+  if (!trigger || !menu) return;
+  if (e.target === trigger && e.key === "ArrowDown" && !state.shopFamilyOpen) {
+    setShopFamilyOpen(true);
+    e.preventDefault();
+    return;
+  }
+  if (menu.hidden) return;
+  if (e.key === "Escape") {
+    setShopFamilyOpen(false);
+    trigger.focus({ preventScroll: true });
+    e.preventDefault();
+    return;
+  }
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    const opts = [...menu.querySelectorAll(".shop-select-opt")];
+    if (!opts.length) return;
+    const i = opts.indexOf(document.activeElement);
+    const next = e.key === "ArrowDown"
+      ? opts[(i + 1) % opts.length]
+      : opts[(i - 1 + opts.length) % opts.length];
+    next.focus({ preventScroll: true });
+    e.preventDefault();
+  }
+});
+// 点面板以外（含非交互空白）或焦点移出时收起，避免下拉一直浮在列表上。
+document.addEventListener("pointerdown", (e) => {
+  if (!state.shopFamilyOpen) return;
+  const sel = $("#shop-family-select");
+  if (sel && !sel.contains(e.target)) setShopFamilyOpen(false);
+}, true);
+document.addEventListener("focusin", (e) => {
+  if (!state.shopFamilyOpen) return;
+  const sel = $("#shop-family-select");
+  if (sel && !sel.contains(e.target)) setShopFamilyOpen(false);
+});
+
+// 采购明细的家庭下拉：同一套键盘导航 / 外部点击收起，但状态与采购清单下拉互不干扰。
+// 上面的清单监听在本页会直接 return（#shop-filter-family 不存在），两套不会抢同一个按键。
+$("#content").addEventListener("keydown", (e) => {
+  const trigger = $("#pur-filter-family"), menu = $("#pur-family-menu");
+  if (!trigger || !menu) return;
+  if (e.target === trigger && e.key === "ArrowDown" && !state.purFamilyOpen) {
+    setPurFamilyOpen(true);
+    e.preventDefault();
+    return;
+  }
+  if (menu.hidden) return;
+  if (e.key === "Escape") {
+    setPurFamilyOpen(false);
+    trigger.focus({ preventScroll: true });
+    e.preventDefault();
+    return;
+  }
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    const opts = [...menu.querySelectorAll(".shop-select-opt")];
+    if (!opts.length) return;
+    const i = opts.indexOf(document.activeElement);
+    const next = e.key === "ArrowDown"
+      ? opts[(i + 1) % opts.length]
+      : opts[(i - 1 + opts.length) % opts.length];
+    next.focus({ preventScroll: true });
+    e.preventDefault();
+  }
+});
+document.addEventListener("pointerdown", (e) => {
+  if (!state.purFamilyOpen) return;
+  const sel = $("#pur-family-select");
+  if (sel && !sel.contains(e.target)) setPurFamilyOpen(false);
+}, true);
+document.addEventListener("focusin", (e) => {
+  if (!state.purFamilyOpen) return;
+  const sel = $("#pur-family-select");
+  if (sel && !sel.contains(e.target)) setPurFamilyOpen(false);
+});
+
 // ---------- 项目内事件委托 ----------
 // 点输入框要能「开 / 收」切换，但点下去会先触发 focusin 把面板打开，等 click 时
 // state 已经变过一轮了，直接取反就会「刚开又立刻关」。所以开合意图在按下的那一刻就定下来：
@@ -2281,13 +2928,50 @@ $("#content").addEventListener("click", async (e) => {
   const busyLabel = BUSY_ACTIONS[action];
   if (busyLabel) setBusy(btn, true, busyLabel);
   try {
+    // 采购清单筛选：纯前端，只换列表行。必须 return —— 落到末尾的 await render()
+    // 会整页重建 #content，搜索框随即失焦，连续输入 / 输入法组合会被打断。
+    if (action === "shop-filter-status" || action === "shop-filter-claim") {
+      const key = action === "shop-filter-status" ? "status" : "claim";
+      setShopFilter({ [key]: btn.dataset.v });
+      state.shopFamilyOpen = false; // 切条件时收起家庭面板
+      renderShopRows();
+      return;
+    } else if (action === "shop-family-toggle") {
+      setShopFamilyOpen(!state.shopFamilyOpen);
+      return;
+    } else if (action === "shop-family-pick") {
+      setShopFilter({ family: btn.dataset.v });
+      state.shopFamilyOpen = false;
+      renderShopRows();
+      const t = $("#shop-filter-family");
+      if (t) t.focus({ preventScroll: true });
+      return;
+    } else if (action === "shop-filter-clear") {
+      resetShopFilter();
+      renderShopRows(true); // 强制清空搜索框里的旧关键词（此时它可能仍有焦点）
+      return;
+    } else if (action === "pur-family-toggle") {
+      setPurFamilyOpen(!state.purFamilyOpen);
+      return;
+    } else if (action === "pur-family-pick") {
+      state.purFilter = { family: btn.dataset.v };
+      state.purFamilyOpen = false;
+      renderPurRows();
+      const t = $("#pur-filter-family");
+      if (t) t.focus({ preventScroll: true });
+      return;
+    } else if (action === "pur-filter-clear") {
+      resetPurFilter();
+      renderPurRows();
+      return;
+    }
     if (action === "toggle-pur-menu") {
       // 开 / 收切换：同一个按钮再点一次就收起来
       if (state.purMenuId !== null && Number(state.purMenuId) === Number(id)) closePurMenu();
       else openPurMenu(btn);
       return;
     }
-    if (action === "del-member" || action === "del-family" || action === "del-carry" || action === "del-shop" || action === "del-purchase") {
+    if (action === "del-family" || action === "del-carry" || action === "del-shop" || action === "del-purchase") {
       // 点「删除」先弹确认框（Alert Dialog），确认后才真正删除；并收起采购记录行的「⋯」菜单
       // 用 closePurMenu() 而非只置空 state：它内部会 syncPurMenus() 把菜单 DOM 一并隐藏，
       // 否则状态已关、DOM 仍开，确认框点「取消」后面板还在，之后点别处也关不掉（守卫直接 return）。
@@ -2309,52 +2993,98 @@ $("#content").addEventListener("click", async (e) => {
       state.lastLogId = 0;
       state.newLogs = 0;
       toast("全部日志已清除");
-    } else if (action === "add-member") {
-      const names = splitNames($("#mem-name-" + fid).value);
-      if (!names.length) return toast("请输入成员姓名");
-      const note = $("#mem-note-" + fid).value.trim();
-      for (const n of names) await api("/members", { method: "POST", body: { name: n, family_id: Number(fid), note } });
-clearFields("mem-name-" + fid, "mem-note-" + fid);
-    } else if (action === "edit-member") {
-      // 进入编辑态：纯前端切换，只重画成员页
-      state.editingMember = Number(id);
-      state.editingFamily = null;
-      if (paintCurrentTab()) return;
-    } else if (action === "cancel-member-edit") {
-      state.editingMember = null;
-      if (paintCurrentTab()) return;
-    } else if (action === "save-member") {
-      const name = $("#mem-edit-name-" + id).value.trim();
-      if (!name) return toast("请输入成员姓名");
-      await api("/members/" + id, { method: "PUT", body: { name, note: $("#mem-edit-note-" + id).value.trim() } });
-      state.editingMember = null;
+    } else if (action === "settle-mode") {
+      // 项目级口径，写库 + 管理员密码；成功后落到末尾的 await render() 统一重新取数重画。
+      const mode = btn.dataset.v;
+      const cur = String((state.settlement || {}).split_mode || "family");
+      if (mode === cur) return;
+      const label = mode === "person" ? "按人数均分" : "按家庭数均分";
+      const ok = await withAdmin(`把结算分摊方式改为「${label}」`, async (pw) => {
+        await api("/projects/" + state.projectId, {
+          method: "PUT", body: { split_mode: mode }, withProject: false, adminPw: pw,
+        });
+      });
+      if (!ok) return; // 取消：口径不变，也不必重渲染
+      state.tabAt.settlement = 0; // 概览与结算都吃 /settlement，切过去时立即重取
+      state.tabAt.overview = 0;
+      toast("分摊方式已改为「" + label + "」");
     } else if (action === "edit-family") {
-      // 进入重命名编辑态：同上，只重画成员页
+      // 进入编辑态：纯前端切换，只重画成员页（名称 / 人数 / 备注一起改）
       state.editingFamily = Number(id);
-      state.editingMember = null;
       if (paintCurrentTab()) return;
     } else if (action === "cancel-family-edit") {
       state.editingFamily = null;
       if (paintCurrentTab()) return;
     } else if (action === "save-family") {
       const name = $("#fam-edit-name-" + id).value.trim();
+      const count = parseCountInput($("#fam-edit-count-" + id).value);
       if (!name) return toast("请输入家庭名称");
-      await api("/families/" + id, { method: "PUT", body: { name } });
+      if (count === null) return toast("人数必须是 0～999 的整数");
+      const dup = familyNameConflict(name, state.families, Number(id));
+      if (dup) return toast(familyNameConflictMsg(dup));
+      await api("/families/" + id, {
+        method: "PUT",
+        body: { name, member_count: count, note: $("#fam-edit-note-" + id).value.trim() },
+      });
       state.editingFamily = null;
       await loadFamilies();
-      if (state.familyId === Number(id)) $("#whoami").textContent = "当前：" + familyName(state.familyId);
+      if (Number(state.familyId) === Number(id)) $("#whoami").textContent = "当前：" + familyName(state.familyId);
+      clearFields("fam-edit-name-" + id, "fam-edit-count-" + id, "fam-edit-note-" + id);
+      state.tabAt.settlement = 0;
+      state.tabAt.overview = 0;
     } else if (action === "add-family-app") {
       const name = $("#new-family-in-app").value.trim();
+      const count = parseCountInput($("#new-family-count").value);
       if (!name) return toast("请输入家庭名称");
-      await api("/families", { method: "POST", body: { name } });
-      clearFields("new-family-in-app");
+      if (count === null) return toast("人数必须是 0～999 的整数");
+      const dup = familyNameConflict(name);
+      if (dup) return toast(familyNameConflictMsg(dup));
+      await api("/families", {
+        method: "POST",
+        body: { name, member_count: count, note: $("#new-family-note").value.trim() },
+      });
+      clearFields("new-family-in-app", "new-family-count", "new-family-note");
       await loadFamilies();
+      state.tabAt.settlement = 0;
+      state.tabAt.overview = 0;
     } else if (action === "add-carry") {
       if (!state.familyId) return toast("请先选择你所属的家庭");
       const name = $("#carry-name").value.trim();
       if (!name) return toast("请输入物品名称");
+      // 先在前端拦一次同名：省一趟往返，提示也更即时（后端 409 兜住并发与多端）
+      const dup = carryNameConflict(name);
+      if (dup) {
+        toast(carryNameConflictMsg(dup));
+        const el = $("#carry-name");
+        if (el) el.select();
+        return;
+      }
       await api("/carry-items", { method: "POST", body: { name, quantity: $("#carry-qty").value.trim() } });
       clearFields("carry-name", "carry-qty");
+    } else if (action === "edit-carry") {
+      // 纯前端切换到编辑态：只重画当前页签，不重新拉数据；别家的行根本没有这个按钮
+      state.editingCarry = Number(id);
+      if (paintCurrentTab()) {
+        const el = $("#carry-edit-qty-" + id);
+        if (el) { el.focus(); el.select(); }
+        return;
+      }
+    } else if (action === "cancel-carry-edit") {
+      state.editingCarry = null;
+      if (paintCurrentTab()) return;
+    } else if (action === "save-carry-edit") {
+      const qtyEl = $("#carry-edit-qty-" + id);
+      if (!qtyEl) return;
+      const quantity = qtyEl.value.trim();
+      await api("/carry-items/" + id, { method: "PUT", body: { quantity } });
+      // 就地更新缓存再重画：不整页重建，列表不闪；留空即清空数量
+      const it = (state.carryItems || []).find((x) => Number(x.id) === Number(id));
+      if (it) it.quantity = quantity;
+      state.editingCarry = null;
+      if (paintCurrentTab()) {
+        toast("已更新数量");
+        return;
+      }
     } else if (action === "toggle-carry") {
       await api("/carry-items/" + id, { method: "PUT", body: { status } });
       // 就地更新缓存并重画：新状态与加载态在同一拍到位，不必等末尾整页 render 重新取数。
@@ -2378,11 +3108,21 @@ clearFields("mem-name-" + fid, "mem-note-" + fid);
         if (el) el.select();
         return;
       }
+      const quantity = $("#shop-qty").value.trim(), unit = $("#shop-unit").value.trim();
       await api("/shopping-items", {
         method: "POST",
-        body: { name, quantity: $("#shop-qty").value.trim(), unit: $("#shop-unit").value.trim() },
+        body: { name, quantity, unit },
       });
       clearFields("shop-name", "shop-qty", "shop-unit");
+      // 新项固定是「待购 + 未接单」：若当前筛选把它挡在外面，看起来就像没添加成功。
+      // 用同一套判定试一次，不匹配就清掉条件；同时立刻把筛选条控件复位，
+      // 免得末尾 render() 之前这一段界面还显示着已失效的旧条件。
+      const draft = { name, quantity, unit, status: "待购", claimed_family_id: null, note: "" };
+      if (shopFilterActive() && !filteredShopping([draft]).length) {
+        resetShopFilter();
+        syncShopFilterControls(true);
+        toast("已清除筛选，以便显示新增的「" + name + "」");
+      }
     } else if (action === "edit-shop") {
       // 纯前端切换：只重画当前页签，不重新拉数据
       state.editingShop = Number(id);
@@ -2470,16 +3210,17 @@ clearFields("mem-name-" + fid, "mem-note-" + fid);
         setSuggestOpen(false);
         $("#pur-item").blur();
       } else {
-        // focus() 会先触发 focusin 展开；下一句是给「输入框已经聚焦、面板却是收起的」
-        // （比如刚从候选里选完一项）补开，幂等，不会重播动画。
-        $("#pur-item").focus();
+        // 安静聚焦只还原焦点，展开由下一句显式完成（只播一次入场动画）。
+        // 特别是「刚从候选里选完一项、输入框仍聚焦而面板已收起」的情形，
+        // 不能靠 focusin 补开，否则会变成收起后又自己弹出来。
+        focusQuietly($("#pur-item"));
         setSuggestOpen(true);
       }
       return;
     } else if (action === "pick-suggest") {
       $("#pur-item").value = btn.dataset.value || "";
       setSuggestOpen(false);
-      $("#pur-item").focus();
+      focusQuietly($("#pur-item")); // 焦点留在输入框方便接着填金额，但别把面板又打开
       return;
     } else if (action === "add-purchase") {
       const itemName = $("#pur-item").value.trim();
@@ -2640,13 +3381,9 @@ if (action === "save-project") {
         renderProjects();
         return toast("项目名称没有改动");
       }
-      // 同名检查：已有别的项目用了这个名字就提示换一个，避免列表里出现两张分不清的卡片
-      // （忽略大小写与首尾空格，纯大小写差异同样会让人混淆）
-      const lower = newName.toLowerCase();
-      const dup = state.projects.find(
-        (x) => x.id !== Number(id) && String(x.name || "").trim().toLowerCase() === lower
-      );
-      if (dup) return toast(`已存在同名项目「${dup.name}」，请换一个名称`);
+      // 同名检查：与新建项目共用一套规则（同一口令下、去空格、忽略大小写、排除自己）
+      const dup = projectNameConflict(newName, id);
+      if (dup) return toast(projectNameConflictMsg(dup));
       // 项目改名需要管理权限密码
       const ok = await withAdmin(`把项目「${oldName}」改名为「${newName}」`, async (pw) => {
         await api("/projects/" + id, { method: "PUT", body: { name: newName }, withProject: false, adminPw: pw });
@@ -2769,7 +3506,7 @@ function hideConfirm() {
   confirmOpts = null;
 }
 async function performDelete(kind, id) {
-  const path = { member: "members", family: "families", carry: "carry-items", shopping: "shopping-items", purchase: "purchases" }[kind];
+  const path = { family: "families", carry: "carry-items", shopping: "shopping-items", purchase: "purchases" }[kind];
   if (!path) return;
   await api("/" + path + "/" + id, { method: "DELETE" });
   if (kind === "family") {
@@ -2784,7 +3521,7 @@ async function performDelete(kind, id) {
   await render();
 }
 function askDelete(kind, id) {
-  const labels = { member: "成员", family: "家庭", carry: "携带物品", shopping: "采购项", purchase: "采购记录" };
+  const labels = { family: "家庭", carry: "携带物品", shopping: "采购项", purchase: "采购记录" };
   const name = labels[kind] || "该项";
   showConfirm({
     title: "确认删除",

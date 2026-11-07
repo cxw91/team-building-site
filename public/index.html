@@ -171,14 +171,14 @@
         <input id="projNote" placeholder="备注（可选）：日期 / 地点" autocomplete="off" />
       </div>
       <div class="section-head" style="margin:14px 0 6px">
-        <span class="title" style="font-size:14px">家庭与成员（手动添加，也可以先建项目、之后再补）</span>
+        <span class="title" style="font-size:14px">家庭与人数（手动添加，也可以先建项目、之后再补）</span>
         <button id="addFamRowBtn" class="link">+ 添加一行</button>
       </div>
       <div id="famRows"></div>
       <p id="homeMsg" class="msg"></p>
       <div class="modal-actions">
         <button id="cancelProjBtn" class="ghost">取消</button>
-        <button id="createProjBtn" class="primary">创建并进入项目</button>
+        <button id="createProjBtn" class="primary">创建项目</button>
       </div>
     </div>
   </div>
@@ -293,12 +293,94 @@
   <div id="toast" class="toast hidden"></div>
 
   <script src="/app.js"></script>
-  <!-- 纯视觉增强：把指针位置写进卡片 CSS 变量，驱动「跟随光斑」。
-       与业务逻辑完全隔离，只在支持 closest / rAF 的浏览器上跑，出错也不影响功能。 -->
+  <!-- 纯视觉增强：桌面把指针位置写进卡片 CSS 变量，驱动「跟随光斑」；
+       手机（真触屏）上只让「当前点击的那张卡」激活流光边 / 外辉光 / 旋转，
+       点击位置周围那圈径向光斑由 CSS 关掉，不写坐标、不加按下态。
+       与业务逻辑完全隔离，出错也不影响功能。 -->
   <script>
     (function () {
+      var TOUCH = !!(window.matchMedia &&
+        window.matchMedia("(hover: none) and (pointer: coarse)").matches);
+      var CARDS = ".section,.card,.proj-card,.proj-add,.panel,.modal-card";
+      var SEL = CARDS + ",.pick";
+
+      /* ---------- 手机：点哪张卡，哪张卡亮；点别处全部熄灭 ---------- */
+      if (TOUCH) {
+        var active = null, sig = null;
+
+        // 标题 / 标签作为跨重建的签名：卡片会被 #content.innerHTML 整体换掉，
+        // 只记元素引用会丢，只记索引又可能在切页后把光挂到另一张卡上。
+        function textOf(el) {
+          var t = el.querySelector(".section-head .title, .title, .lbl, h1, h2, h3");
+          return ((t ? t.textContent : el.textContent) || "").replace(/\s+/g, " ").trim().slice(0, 40);
+        }
+        function signature(el) {
+          var all = document.querySelectorAll(CARDS), i = 0;
+          for (; i < all.length; i++) if (all[i] === el) break;
+          return { i: i < all.length ? i : -1, t: textOf(el) };
+        }
+        function findActive() {
+          if (!sig) return null;
+          var all = document.querySelectorAll(CARDS), i;
+          var byIndex = all[sig.i];
+          if (byIndex && (!sig.t || textOf(byIndex) === sig.t)) return byIndex;
+          for (i = 0; i < all.length; i++) {
+            if (sig.t && textOf(all[i]) === sig.t) return all[i];
+          }
+          return null;
+        }
+        function setActive(el) {
+          if (active === el) return;
+          if (active) active.classList.remove("fx-active");
+          active = el;
+          sig = el ? signature(el) : null;
+          if (active) active.classList.add("fx-active");
+        }
+
+        // 用 pointerup 而不是 pointerdown：滚动页面时按下不该点亮卡片；
+        // 移动超过 10px 视为滑动，直接放弃这次激活。
+        var down = null;
+        document.addEventListener("pointerdown", function (e) {
+          if (e.pointerType === "mouse") return;
+          down = { x: e.clientX, y: e.clientY, t: e.target };
+        }, { passive: true });
+        document.addEventListener("pointermove", function (e) {
+          if (!down || e.pointerType === "mouse") return;
+          if (Math.abs(e.clientX - down.x) > 10 || Math.abs(e.clientY - down.y) > 10) down.moved = true;
+        }, { passive: true });
+        document.addEventListener("pointerup", function (e) {
+          if (e.pointerType === "mouse" || !down) return;
+          var d = down; down = null;
+          if (d.moved) return;
+          var el = d.t && d.t.closest ? d.t.closest(CARDS) : null;
+          if (el && el.classList.contains("readonly")) el = null;  // 只读卡不参与光效
+          setActive(el);                       // 点在卡片外 = 取消所有激活
+        }, { passive: true });
+        document.addEventListener("pointercancel", function () { down = null; }, { passive: true });
+
+        // #content 会被整块重建（切页、提交后刷新）：同一张卡补回激活态，
+        // 签名对不上（换页 / 卡片已不存在）就自然熄灭。
+        if (window.MutationObserver) {
+          var touchRoot = document.getElementById("content");
+          if (touchRoot) {
+            new MutationObserver(function (muts) {
+              if (!sig || (active && active.isConnected)) return;
+              var added = false;
+              for (var i = 0; i < muts.length; i++) {
+                if (muts[i].addedNodes && muts[i].addedNodes.length) { added = true; break; }
+              }
+              if (!added) return;
+              var next = findActive();
+              active = null;                  // 旧节点已脱离文档，跳过 setActive 的相等判断
+              setActive(next);
+            }).observe(touchRoot, { childList: true, subtree: true });
+          }
+        }
+        return;
+      }
+
+      /* ---------- 桌面：原生 :hover + 跟手光斑 ---------- */
       var raf = 0, last = null;
-      var SEL = ".card,.proj-card,.proj-add,.panel,.section,.modal-card,.pick";
       // 记录的是坐标而不是事件对象：内容区会被整块重建（切页签、后台刷新），
       // 重建后旧的事件目标已经脱离文档，必须用 elementFromPoint 重新取当前指针下的元素。
       function apply() {
@@ -319,6 +401,7 @@
         last = { x: e.clientX, y: e.clientY };
         schedule();
       }, { passive: true });
+
       // 重建后补一次：新卡片还没拿到指针坐标，光斑会突然消失（看上去也是一次闪）。
       // 在 MutationObserver 里同步补，而不是等下一帧 rAF —— 微任务早于本帧的样式/绘制，
       // 所以重建的那一帧就已经带上光斑；丢给 rAF 会白白空出一帧。

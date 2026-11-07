@@ -32,6 +32,11 @@
   --surface: #ffffff;
   --surface-2: #f6f7fc;
   --surface-3: #eef0f8;
+  /* 非自家 / 非自己家庭的只读卡片：灰调底 + 虚线边，与自家卡片（白底 + 浅紫实线边）区分 */
+  --ro-surface: #eef0f6;
+  --ro-line: rgba(15, 22, 48, 0.28);
+  --ro-badge-bg: rgba(15, 22, 48, 0.05);
+  --ro-badge-ink: #5a6380;
   /* 次按钮（.ghost）的底色与悬停色：--surface-3 作常态底，悬停再深一档，
      这样「取消」这类按钮在卡片上始终是一个实心块，而不是一圈细描边 */
   --ghost-hover: #e4e8f4;
@@ -158,6 +163,11 @@ html[data-theme="dark"] {
   --surface: #131829;
   --surface-2: #191f32;
   --surface-3: #212940;
+  /* 深色下只读卡片：比自家卡片更暗、更灰，虚线边用亮一档的中性白 */
+  --ro-surface: #0c101b;
+  --ro-line: rgba(255, 255, 255, 0.32);
+  --ro-badge-bg: rgba(255, 255, 255, 0.06);
+  --ro-badge-ink: #a3aec6;
   --ghost-hover: #2a3350;
   --input-bg: #0f1422;
   --modal-surface: #182034;
@@ -1407,11 +1417,41 @@ input[type="number"] {
   animation-play-state: paused;
 }
 
+/* 只读卡片（非自家 / 非自己家庭）：灰调底 + 灰虚线边，标题旁另有「只读」角标。
+   刻意不铺 conic 流光层、不转 --ga、不响应悬停辉光，也不画跟随指针的光斑 ——
+   这些效果只属于可编辑的自家卡片，一眼就能分出「这张不是我的」。 */
 .section.readonly {
   background:
-    radial-gradient(70% 62% at 100% 0%, var(--card-glow), transparent 66%) padding-box,
-    linear-gradient(var(--surface-2), var(--surface-2)) padding-box,
-    conic-gradient(from var(--ga), var(--card-ring)) border-box;
+    linear-gradient(var(--ro-surface), var(--ro-surface)) padding-box,
+    linear-gradient(var(--ro-line), var(--ro-line)) border-box;
+  border-style: dashed;
+  animation: none;
+  box-shadow: none;
+}
+.section.readonly:hover {
+  box-shadow: none;
+}
+.section.readonly::after {
+  display: none;
+}
+/* 标题旁的只读角标：与卡片同一套灰调，虚线呼应卡片边框 */
+.ro-badge {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border: 1px dashed var(--ro-line);
+  border-radius: 999px;
+  background: var(--ro-badge-bg);
+  color: var(--ro-badge-ink);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.7;
+  white-space: nowrap;
+  vertical-align: 2px;
+}
+@media (max-width: 560px) {
+  .ro-badge { margin-left: 5px; padding: 1px 6px; font-size: 10.5px; }
 }
 
 /* 悬停：把边框色标切成彩色流光 + 解冻旋转 + 叠一层外辉光。
@@ -1427,7 +1467,8 @@ input[type="number"] {
    就会盖住前一张卡里展开的下拉面板。展开时把所在卡片提到最上层，菜单才露得出来。
    两个选择器同时留着：has-open-menu 由 app.js 打，:has 兼容不跑 JS 的场景。 */
 .section.has-open-menu,
-.section:has(.combo-list:not([hidden])) {
+.section:has(.combo-list:not([hidden])),
+.section:has(.shop-select-menu:not([hidden])) {
   z-index: 30;
 }
 
@@ -1815,6 +1856,49 @@ input[type="number"] {
   color: var(--text);
   font-variant-numeric: tabular-nums;
   letter-spacing: -0.01em;
+}
+
+/* ---------- 携带物品：物品名字 / 数量两列左对齐 ----------
+   原来数量是名称后面的圆角小标签，名字长短不一，各行的数量位置就参差。
+   改用 grid 固定两列起点：名称列吃掉剩余宽度，数量列固定宽且左对齐；
+   数量留空也保留整列（值显示「未填」），避免缺列让相邻行错位。 */
+.carry-info { min-width: 0; }
+.carry-line {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 128px;
+  gap: 14px;
+  align-items: start;
+}
+.carry-cell {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  min-width: 0;
+}
+.carry-label {
+  flex: 0 0 auto;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.carry-val {
+  min-width: 0;
+  font-size: 13.8px;
+  font-weight: 600;
+  color: var(--text);
+  word-break: break-word;
+}
+.carry-qty .carry-val { font-variant-numeric: tabular-nums; }
+.carry-qty.is-empty .carry-val { color: var(--muted); font-weight: 500; }
+@media (max-width: 700px) {
+  .carry-line { grid-template-columns: minmax(0, 1fr) 100px; gap: 8px; }
+  .carry-label { font-size: 11.5px; }
+  .carry-val { font-size: 13px; }
+  /* 窄屏 .shop-row 允许换行：某一行名称一长就把操作按钮挤到下一行，该行 .main
+     随之变宽，数量列起点也会和别的行错开。让信息区固定独占第一行（操作按钮统一
+     另起一行），所有行的 .main 宽度一致，两列才能上下对齐。 */
+  .shop-row .main.carry-info { flex: 1 1 100%; min-width: 0; }
 }
 
 /* ---------- 行尾「更多操作」菜单（采购明细：改金额 / 删除） ----------
@@ -2533,6 +2617,278 @@ html[data-theme="dark"] .tone-red { color: #ff8fa5; }
   border-radius: 7px;
 }
 
+/* ---------- 采购清单筛选条 ---------- */
+/* 常驻工具条：两组分段 + 家庭下拉 + 搜索框。筛选只换 #shop-list，
+   这一块不参与重绘，因此输入焦点与输入法组合不会被打断。 */
+.shop-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  margin-top: 14px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+/* 「状态 / 接单」两组分段：默认上下两行，间距与筛选条本身一致；
+   桌面端由下方 min-width: 701px 的规则改成并排一行。 */
+.shop-filter-segs {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  min-width: 0;
+}
+.shop-filter-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+/* 分组强化：两组各自成为一张小卡片，标签前置品牌色竖线，选中态用渐变实心块 */
+.shop-seg-line {
+  padding: 6px 9px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 1px 3px -2px rgba(15, 22, 48, 0.28);
+}
+.shop-filter-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  min-width: 30px;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+.shop-filter-label::before {
+  content: "";
+  width: 3px;
+  height: 12px;
+  border-radius: 3px;
+  background: var(--brand);
+}
+.shop-seg {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface-3);
+}
+.seg-btn {
+  appearance: none;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 4px 12px;
+  min-height: 27px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.18s var(--ease), color 0.18s var(--ease),
+    border-color 0.18s var(--ease), box-shadow 0.18s var(--ease);
+}
+/* 桌面端：底色只由「是否选中」决定，鼠标悬停一律不改底色。
+   以前 :hover:not(:disabled) 的特异性（3）高于 .on（2），会把已选中的深紫渐变实心块
+   盖成浅紫高亮，于是同一个筛选条里出现两种选中底色；鼠标移开又变回去。
+   现在 hover 只给「未选中」按钮一点文字 / 描边反馈，不写 background；
+   已选中的按钮不匹配这条规则，深紫渐变 + 白字在悬停前后完全一致。
+   键盘焦点圈（:focus-visible）与禁用态（:disabled）不受影响。 */
+.seg-btn:hover:not(:disabled):not(.on) {
+  color: var(--brand-ink);
+  border-color: var(--brand-line);
+}
+.seg-btn.on {
+  background: linear-gradient(135deg, var(--brand-ink), var(--brand));
+  color: #fff;
+  font-weight: 700;
+  box-shadow: 0 6px 16px -8px var(--brand), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+/* 深色令牌里 brand-ink 偏亮，白字对比不足，换一档更深的渐变起点 */
+html[data-theme="dark"] .seg-btn.on {
+  background: linear-gradient(135deg, #6d5bf6, var(--brand));
+}
+.seg-btn:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 2px;
+}
+/* 互斥禁用：让「接单 ↔ 家庭」的关联在界面上直接看得见 */
+.seg-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+  filter: grayscale(0.5);
+}
+/* 自绘家庭下拉：触发器与选项面板全部走主题令牌，不再由系统绘制 */
+.shop-select { position: relative; flex: 0 1 175px; min-width: 130px; }
+.shop-select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  padding: 10px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--input-bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 13.5px;
+  line-height: 1.4;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.2s var(--ease), box-shadow 0.2s var(--ease), background 0.2s var(--ease);
+}
+.shop-select-trigger:hover:not(:disabled) { border-color: var(--line-strong); }
+.shop-select-trigger:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+.shop-select-trigger[aria-expanded="true"] {
+  border-color: var(--brand-line);
+  box-shadow: 0 0 0 4px var(--brand-soft);
+}
+.shop-select-trigger:disabled { opacity: 0.45; cursor: not-allowed; }
+.shop-select-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.shop-select-caret {
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 6px solid var(--muted);
+  transition: transform 0.2s var(--ease);
+}
+.shop-select-trigger[aria-expanded="true"] .shop-select-caret { transform: rotate(180deg); }
+.shop-select-menu {
+  position: absolute;
+  z-index: 60;
+  left: 0;
+  top: calc(100% + 6px);
+  min-width: 100%;
+  max-width: 280px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: var(--sh-2);
+}
+/* 只有用户主动打开才播入场动画；DOM 重建恢复开合时保持静态，避免切页签闪一下 */
+.shop-select-menu.enter { animation: menu-in 0.18s var(--ease) both; }
+.shop-select-opt {
+  position: relative;
+  display: block;
+  width: 100%;
+  padding: 8px 10px 8px 22px;
+  border: 0;
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text-2);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.16s, color 0.16s;
+}
+.shop-select-opt:hover,
+.shop-select-opt:focus-visible {
+  background: var(--brand-soft);
+  color: var(--text);
+  outline: none;
+}
+.shop-select-opt.on {
+  background: var(--brand-soft);
+  color: var(--brand-ink);
+  font-weight: 700;
+}
+.shop-select-opt.on::before {
+  content: "";
+  position: absolute;
+  left: 9px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 3px;
+  height: 12px;
+  border-radius: 3px;
+  background: var(--brand);
+}
+.shop-filter-line > input { flex: 1 1 190px; min-width: 0; }
+/* .ghost / .pill 自带 display，hidden 属性要强制生效 */
+.shop-filter [hidden] { display: none !important; }
+.shop-empty-act { margin-top: 12px; }
+.shop-empty-act .pill { cursor: pointer; }
+
+@media (max-width: 700px) {
+  .shop-filter { padding: 10px; gap: 10px; }
+  .shop-filter-segs { gap: 10px; } /* 与筛选条的 10px 一致，窄屏布局保持原样 */
+  /* 窄屏不卡片化，避免额外 padding 把 4 个接单按钮挤成两行 */
+  .shop-seg-line { padding: 0; border: 0; background: transparent; box-shadow: none; }
+  .shop-filter-label { min-width: 28px; gap: 4px; }
+  .shop-seg { flex: 1 1 220px; border-radius: var(--r-md); }
+  .seg-btn { flex: 1 1 auto; padding: 5px 9px; }
+  .shop-filter-line > .shop-select,
+  .shop-filter-line > input,
+  .shop-filter-line > button[data-action="shop-filter-clear"] { flex: 1 1 100%; min-width: 0; }
+  .shop-select-menu { max-width: 100%; }
+}
+
+/* 电脑端：状态与接单两组并排一行；极窄的分屏窗口放不下时允许换行，避免横向溢出 */
+@media (min-width: 701px) {
+  .shop-filter-segs {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 18px;
+  }
+  .shop-filter-segs > .shop-filter-line { flex: 0 0 auto; }
+}
+
+/* ---------- 采购明细筛选（只按家庭） ---------- */
+/* 复用上面那套自绘家庭下拉（.shop-select*）：触发器与选项面板全走主题令牌，
+   深色主题下不会冒出系统白底。工具条只有一组条件，直接横排。 */
+.pur-filter {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 10px 0 12px;
+}
+.pur-filter-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  font-size: 12.5px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--text);
+}
+.pur-filter-label::before {
+  content: "";
+  width: 3px;
+  height: 12px;
+  border-radius: 3px;
+  background: var(--brand);
+}
+.pur-filter .pur-select { flex: 0 1 200px; min-width: 150px; }
+/* .ghost 自带 display，hidden 属性要强制生效 */
+.pur-filter [hidden] { display: none !important; }
+
+@media (max-width: 700px) {
+  /* 手机端：家庭标签 + 下拉 + 「清除筛选」压在同一行，不要各自独占一行。
+     下拉可收缩（名称过长由 .shop-select-value 省略号处理），按钮保持本征宽度不换行。 */
+  .pur-filter { flex-wrap: nowrap; }
+  .pur-filter .pur-select { flex: 1 1 auto; min-width: 0; }
+  .pur-filter > button[data-action="pur-filter-clear"] { flex: 0 0 auto; min-width: 0; padding: 8px 12px; }
+}
+
 /* ---------- 采购清单行 ---------- */
 .shop-row {
   align-items: center;
@@ -2853,7 +3209,7 @@ html.modal-open .bg-aurora * {
   flex-wrap: wrap;
 }
 
-/* 新建项目里的家庭输入行 */
+/* 新建项目里的家庭输入行：家庭名称 + 人数 + 一条备注（忌口 / 过敏） */
 .fam-row {
   display: flex;
   gap: 8px;
@@ -2861,18 +3217,64 @@ html.modal-open .bg-aurora * {
   margin-bottom: 8px;
 }
 
-.fam-row .fam-name {
-  flex: 1 1 40%;
-}
-
-.fam-row .fam-members {
-  flex: 1 1 55%;
-}
+.fam-row .fam-name { flex: 1 1 26%; min-width: 0; }
+/* 人数框必须放得下整句「人数（可留空）」：13.5px 字号下 7 个全角字符约 95px，
+   再加左右 26px 内边距和 2px 边框，原来的 96px 会把文字硬切成「人数（可留」。
+   固定 140px 留足余量，且不参与收缩（窄屏另有整行换行规则覆盖）。 */
+.fam-row .fam-count { flex: 0 0 140px; min-width: 0; }
+.fam-row .fam-note { flex: 1 1 40%; min-width: 0; }
 
 .fam-row .link {
   flex: 0 0 auto;
   font-size: 12px;
   padding: 6px 4px;
+}
+
+/* 结算页：分摊方式切换条。复用 .seg-btn 的选中 / 禁用 / 深色态，布局独立 */
+.split-switch {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+}
+.split-switch-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text);
+  white-space: nowrap;
+}
+.split-switch-label::before {
+  content: "";
+  width: 3px;
+  height: 12px;
+  border-radius: 3px;
+  background: var(--brand);
+}
+.split-switch-seg {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface-3);
+}
+.split-switch .seg-btn { padding: 5px 16px; }
+.split-fallback { color: var(--text-2); }
+@media (max-width: 700px) {
+  .split-switch .seg-btn { flex: 1 1 auto; }
+  /* 家庭编辑行 / 新增家庭行的人数框有内联 flex 基准，窄屏用 !important 覆盖成整行，避免被挤成一小截 */
+  .fam-edit-row input,
+  #new-family-count { flex: 1 1 100% !important; }
 }
 
 /* 管理口令列表 */
@@ -3764,7 +4166,11 @@ html[data-theme="dark"] .theme-icon--moon {
   }
 
   .fam-row .fam-name,
-  .fam-row .fam-members {
+  .fam-row .fam-note {
+    flex: 1 1 100%;
+  }
+
+  .fam-row .fam-count {
     flex: 1 1 100%;
   }
 
@@ -3834,4 +4240,97 @@ html[data-theme="dark"] .theme-icon--moon {
   .orb {
     animation: none;
   }
+}
+
+/* ---------- 手机端：选中统一底色 ---------- */
+/* 触屏没有真正的 hover：点一下之后 :hover 会一直粘在最后点过的元素上，于是
+   同一个筛选条里，一个选中项显示 .on 的深紫渐变发光块、另一个却显示 :hover 的浅紫高亮
+   （hover 规则特异性更高，把 .on 盖掉了），两种选中样式并存。
+   这里只收口选中底色：一律浅紫底（截图里「已接单」的样子），未选中项不再因残留 hover 变亮。
+   卡片的流光边框 / 外辉光 / 旋转全部常亮，只有点击位置周围的径向光斑关掉，见下方「真触屏」专用块。 */
+@media (hover: none) and (pointer: coarse), (max-width: 700px) {
+  /* 选中态：浅紫底 + 品牌色文字 + 1px 品牌色细边，不要深紫渐变实心与发光阴影。
+     筛选条「状态 / 接单」和结算页「按家庭数 / 按人数」共用这一套。 */
+  .seg-btn.on,
+  .seg-btn.on:hover:not(:disabled),
+  html[data-theme="dark"] .seg-btn.on,
+  html[data-theme="dark"] .seg-btn.on:hover:not(:disabled) {
+    background: var(--brand-soft);
+    color: var(--brand-ink);
+    border-color: var(--brand-line);
+    box-shadow: none;
+  }
+  /* 未选中项：残留的 :hover 不该让「全部」这类按钮看起来像被选中 */
+  .seg-btn:hover:not(:disabled):not(.on) {
+    background: transparent;
+    color: var(--text-2);
+    border-color: transparent;
+    box-shadow: none;
+  }
+
+}
+
+/* ---------- 真触屏：只有「当前点击的卡片」激活光效 ---------- */
+/* 桌面（含把窗口拉窄的桌面）完全不进这组规则，仍走原生 :hover，四种光效都在。
+   真触屏没有真正的悬停，:hover 会粘在最后点过的卡片上，所以先把粘住的悬停态复位成常态；
+   再由 index.html 的增强脚本给「当前点击的那张卡」打 .fx-active（点另一张 / 点卡片外即熄灭）。
+   点击位置周围的径向光斑（::after，由 --mx/--my 定位）依旧不渲染 —— 上一轮要求关掉的
+   「那团光」保持关闭，触屏上不再写入指针坐标。
+   只读卡片（非自家 / 非自己家庭）依旧不参与，保持灰底虚线边的朴素外观。 */
+@media (hover: none) and (pointer: coarse) {
+  /* ① 点击位置周围的那团光：径向光斑不渲染（含粘住的 :hover 态） */
+  .section::after,
+  .card::after,
+  .proj-card::after,
+  .proj-add::after,
+  .panel::after,
+  .modal-card::after,
+  .pick::after { display: none; }
+
+  /* ② 粘住的 :hover → 常态：不能让 hover 决定哪张卡亮 */
+  .section:hover, .card:hover, .proj-card:hover, .proj-add:hover,
+  .panel:hover, .modal-card:hover {
+    --card-ring: var(--ring-idle);
+  }
+  .section:hover, .card:hover, .proj-card:hover, .proj-add:hover {
+    animation-play-state: paused;
+  }
+  .panel:hover, .modal-card:hover { animation-play-state: running, paused; }
+  .section:hover, .card:hover, .proj-card:hover { box-shadow: var(--sh-1); }
+  .proj-add:hover { box-shadow: none; color: var(--muted); }
+  .panel:hover { box-shadow: var(--sh-2); }
+  .modal-card:hover {
+    box-shadow: 0 46px 90px -34px rgba(6, 9, 20, 0.72), 0 0 0 1px rgba(255, 255, 255, 0.04);
+  }
+  /* 选择项（.pick）点完不该因为粘住的 :hover 一直保持高亮 */
+  .pick:hover {
+    border-color: var(--line);
+    background: var(--surface-2);
+    transform: none;
+  }
+
+  /* ③ 只有 .fx-active 点亮：取值与桌面 :hover 完全相同的流光边 / 外辉光 / 旋转 */
+  .section.fx-active:not(.readonly), .card.fx-active, .proj-card.fx-active,
+  .proj-add.fx-active, .panel.fx-active, .modal-card.fx-active {
+    --card-ring: var(--ring-stops);
+  }
+  .section.fx-active:not(.readonly) {
+    box-shadow: var(--sh-2), 0 0 34px -8px var(--halo), 0 20px 48px -26px var(--halo);
+  }
+  .card.fx-active {
+    box-shadow: var(--sh-2), 0 0 32px -8px var(--halo), 0 20px 46px -26px var(--halo);
+  }
+  .proj-card.fx-active, .proj-add.fx-active {
+    box-shadow: var(--sh-2), 0 0 34px -8px var(--halo), 0 22px 52px -28px var(--halo);
+  }
+  .proj-add.fx-active { color: var(--brand-ink); }
+  .panel.fx-active {
+    box-shadow: var(--sh-2), 0 0 38px -8px var(--halo), 0 26px 60px -28px var(--halo);
+  }
+  .modal-card.fx-active {
+    box-shadow: 0 52px 104px -34px rgba(6, 9, 20, 0.78), 0 0 44px -6px var(--halo);
+  }
+  .section.fx-active:not(.readonly), .card.fx-active, .proj-card.fx-active,
+  .proj-add.fx-active { animation-play-state: running; }
+  .panel.fx-active, .modal-card.fx-active { animation-play-state: running, running; }
 }
