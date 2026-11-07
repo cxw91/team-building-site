@@ -2835,7 +2835,7 @@ html.modal-open .bg-aurora * {
   font-weight: 680;
   letter-spacing: -0.012em;
   color: var(--text);
-  margin-bottom: 8px;
+  margin-bottom: 12px;
 }
 
 .modal-desc {
@@ -2974,6 +2974,34 @@ html.modal-open .bg-aurora * {
   width: 100%;
   max-width: 420px;
   animation: fade-up 0.5s var(--ease) both;
+}
+
+/* 自动恢复会话：口令卡片整体撤掉（不只是盖一层，键盘与读屏也碰不到），
+   换成同尺寸的加载卡片；极光 / 星座背景不变，深浅主题沿用 .panel 的令牌。 */
+#loginView.restoring .auth {
+  display: none;
+}
+.session-loading {
+  width: 100%;
+  max-width: 420px;
+}
+.session-loading[hidden] {
+  display: none;
+}
+.session-panel .sub {
+  margin-bottom: 0;
+}
+.session-spinner {
+  width: 34px;
+  height: 34px;
+  margin: 0 auto 18px;
+  border: 2.5px solid var(--line-strong);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: spin 0.85s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .session-spinner { animation-duration: 2.4s; }
 }
 
 .auth-halo {

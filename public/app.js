@@ -424,7 +424,7 @@ function askAdmin(reason, errText = "", hint = "") {
     // 取消时就无法还原被压在下面的表单。
     if (!modal._prev && openModal && openModal !== modal) modal._prev = openModal;
     $("#adminReason").textContent = reason;
-    $("#adminHint").textContent = hint || "本口令的管理员密码";
+    $("#adminHint").textContent = hint || "管理员密码";
     $("#adminMsg").textContent = errText;
     $("#adminPw").value = "";
     $("#adminPw").disabled = false;
@@ -514,6 +514,17 @@ function show(view) {
   }
 }
 
+// 本地已有 token 时，启动时先跑一段串行的接口请求才切到项目内。直接用口令卡片当等待页，
+// 用户会以为「没登录成功」并可能重复输入。这里在恢复期间把口令卡片换掉（CSS 里是 display:none，
+// 键盘与读屏都碰不到），只留一张不可交互的加载卡片；恢复结束或失败后必须复位，否则下次
+// 退出登录回到登录页时 .auth 还是隐藏的。
+function setSessionRestoring(on) {
+  const view = $("#loginView"), box = $("#sessionLoading");
+  if (!view || !box) return;
+  view.classList.toggle("restoring", !!on);
+  box.hidden = !on;
+}
+
 // ---------- 登录 ----------
 async function doLogin() {
   const passcode = $("#passcode").value.trim();
@@ -577,6 +588,7 @@ function logout() {
   pcEditing = null;
   pcDeleting = null;
   closePcModal(); // 退出时若口令管理弹窗开着，一并关掉
+  setSessionRestoring(false); // 若正处于会话恢复中失败，回到登录页必须还原口令卡片
   show("loginView");
 }
 
@@ -719,8 +731,10 @@ try {
     $("#homeMsg").textContent = "";
     closeNewProj();
     await loadProjects();
-    toast(`项目已创建：${res.family_count} 个家庭、${res.member_count} 位成员`);
-    await enterProject(res.id, name);
+    // 创建成功后停留在「我的项目」，由用户手动点「进入」再走 enterProject 全流程：
+    // 不写 tb_project、不切 state.projectId，也不预热新项目的页签缓存。
+    renderProjects(); // 原来靠 enterProject 切走再回来触发重绘，停留时必须显式重画列表
+    toast(`项目已创建：${res.family_count} 个家庭、${res.member_count} 位成员，点「进入」打开`);
   } catch (e) {
     $("#homeMsg").textContent = e.message;
   } finally {
@@ -757,16 +771,18 @@ state.editingMember = null;
   state.editingPurchase = null;
   state.purMenuId = null;
   resetTabCache(); // 换项目：清掉上一个项目的页签缓存
-  // 项目名可能已改名，状态也可能变了，取一次最新的
+  // 项目名可能已改名，状态也可能变了，取一次最新的；家庭列表与它互不依赖，
+  // 两个请求并行发，自动恢复登录时少一个串行 RTT（原来这里要等两趟网络）。
   state.projectStatus = (state.projects.find((p) => p.id === state.projectId) || {}).status || "";
-  try {
-    const d = (await api("/projects/" + state.projectId, { withProject: false })).data;
-    if (d && d.project) {
-      state.projectName = d.project.name;
-      state.projectStatus = d.project.status;
-    }
-  } catch {}
-  await loadFamilies();
+  const [detail] = await Promise.all([
+    api("/projects/" + state.projectId, { withProject: false }).catch(() => null),
+    loadFamilies(),
+  ]);
+  const d = detail && detail.data;
+  if (d && d.project) {
+    state.projectName = d.project.name;
+    state.projectStatus = d.project.status;
+  }
   const saved = Number(localStorage.getItem(familyKey(state.projectId))) || null;
   if (saved && state.families.some((f) => f.id === saved)) {
     state.familyId = saved;
@@ -1242,7 +1258,7 @@ function budgetPanelHtml(o) {
                <button class="primary shrink" data-action="save-budget">保存</button>
                <button class="ghost shrink" data-action="cancel-budget">取消</button>
              </div>
-             <p class="hint" style="margin:8px 0 0">填 0 可取消预算设置；设置 / 修改预算需要本口令的管理员密码。</p>`
+             <p class="hint" style="margin:8px 0 0">填 0 可取消预算设置；设置 / 修改预算需要管理员密码。</p>`
           : budgetProgressHtml(o.total_amount, o.budget)
       }`;
 }
@@ -1283,7 +1299,7 @@ function bonusPanelHtml() {
         <button class="primary shrink" data-action="save-bonus">保存</button>
         <button class="ghost shrink" data-action="cancel-bonus">取消</button>
       </div>
-      <p class="hint" style="margin:8px 0 0">填 0 可取消奖金设置；设置 / 修改任务奖金需要本口令的管理员密码。</p>`;
+      <p class="hint" style="margin:8px 0 0">填 0 可取消奖金设置；设置 / 修改任务奖金需要管理员密码。</p>`;
   }
   if (!has) {
     return `${head}
@@ -2206,7 +2222,7 @@ function paintLogs() {
   const canDel = !isReadonly();
   $("#content").innerHTML = logs.length
     ? `<div class="section-head" style="margin-bottom:6px">
-         <span class="hint">共 ${logs.length} 条${canDel ? " · 删除/清除需要本口令的管理员密码" : ""}</span>
+         <span class="hint">共 ${logs.length} 条${canDel ? " · 删除/清除需要管理员密码" : ""}</span>
          ${canDel ? `<button class="link danger" data-action="clear-logs">清除全部日志</button>` : ""}
        </div>
        <div class="logs">${logs.slice().reverse().map((l) => logHtml(l, canDel)).join("")}</div>`
@@ -2595,7 +2611,7 @@ if (action === "del-project") {
       // 「结束项目」与「重启已结束的项目」都属于高风险操作，都要先过管理权限密码
       const isRestart = status === "进行中";
       const ok = await withAdmin(
-        isRestart ? `重启已结束的项目「${label}」` : `结束项目「${label}」（结束后项目内只读，需用本口令的管理员密码才能重启）`,
+        isRestart ? `重启已结束的项目「${label}」` : `结束项目${label}」（结束后项目内只读，需管理员密码才能重启）`,
         async (pw) => {
           await api("/projects/" + id, { method: "PUT", body: { status }, withProject: false, adminPw: pw });
         }
@@ -2879,7 +2895,7 @@ async function pcAdd() {
   const name = $("#pcNewName").value.trim();
   const adminPasscode = $("#pcNewAdminPw").value.trim();
   if (!passcode) return ($("#pcMsg").textContent = "请填写新口令");
-  if (!adminPasscode) return ($("#pcMsg").textContent = "请为该口令设置管理员密码（同一口令下的项目共用它）");
+  if (!adminPasscode) return ($("#pcMsg").textContent = "请为该口令设置管理员密码");
   const btn = $("#pcAddBtn");
   if (btn.dataset.busy === "1") return;
   setBusy(btn, true, "新增中…");
@@ -2907,7 +2923,7 @@ async function pcSave(id) {
   const name = $("#pc-edit-name-" + id).value.trim();
   const adminPasscode = $("#pc-edit-adminpw-" + id).value.trim();
   if (!passcode) return ($("#pcMsg").textContent = "口令不能为空");
-  if (!adminPasscode) return ($("#pcMsg").textContent = "管理员密码不能为空（同一口令下的项目共用它）");
+  if (!adminPasscode) return ($("#pcMsg").textContent = "管理员密码不能为空");
   try {
     const r = await pcRun("修改口令需要超级密码", (pw) =>
       api("/passcodes/" + id, { method: "PUT", body: { passcode, name, adminPasscode }, withProject: false, adminPw: pw })
@@ -3204,9 +3220,13 @@ function watchAutofill() {
   applyTheme(currentTheme(), false); // 主题已由 index.html 头部脚本定好，这里只同步按钮文案
   constellationCtl = initConstellation();
   if (!state.token) return show("loginView");
+  show("loginView"); // 显式进入登录视图：同时启动深色主题下的星座背景，供加载态复用
+  setSessionRestoring(true);
   try {
     await afterLogin();
   } catch {
     logout();
+  } finally {
+    setSessionRestoring(false); // 成功切走、或失败退回登录页，都要还原口令卡片
   }
 })();
