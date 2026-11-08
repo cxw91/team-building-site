@@ -220,11 +220,15 @@
   <!-- 主界面（项目内）：侧边栏导航 + 内容区 -->
   <section id="appView" class="view hidden shell">
     <aside class="sidebar">
-      <div class="side-top">
+      <!-- 项目内头部：品牌头像 + 双色标签条。条宽随内容收缩（不拉满），
+           条内左项目名、中间细竖线、右「当前：陈」；纯展示，不加按钮 / 箭头 /
+           点击行为，切换家庭仍走右上角菜单。 -->
+      <div class="side-top side-top--strip">
         <div class="brand-mark sm" aria-hidden="true"><svg class="brand-icon" aria-hidden="true" focusable="false"><use href="#icon-brand"></use></svg></div>
-        <div class="side-titles">
-          <span class="brand-name" id="projTitle">团建管理</span>
-          <span class="brand-sub" id="whoami"></span>
+        <div class="side-strip">
+          <span class="side-strip__proj" id="projTitle">团建管理</span>
+          <span class="side-strip__sep" aria-hidden="true"></span>
+          <span class="side-strip__who" id="whoami" title="当前家庭" aria-label="当前家庭"></span>
         </div>
       </div>
       <nav id="tabs" class="side-nav" aria-label="页面导航"></nav>

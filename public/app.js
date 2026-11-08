@@ -887,6 +887,15 @@ function familyName(id) {
   const f = state.families.find((x) => x.id === id);
   return f ? f.name : "未分配";
 }
+// 侧栏头部「双色标签条」右侧的家庭名：纯展示（无点击交互），切家庭 / 改家庭名后同步文本与无障碍标签
+function setWhoami(name) {
+  const el = $("#whoami");
+  if (!el) return;
+  const label = name || "未分配";
+  el.textContent = label;
+  el.setAttribute("title", "当前家庭：" + label);
+  el.setAttribute("aria-label", "当前家庭：" + label);
+}
 // 采购清单「接单家庭」：已认领 → 显示哪家接的（浅色副信息行里的蓝色标记，
 // 与未认领的橙色「接任务」按钮形成颜色区分）；未认领 → 不显示
 function claimInfo(i) {
@@ -992,7 +1001,7 @@ function renderFamilyMenu() {
 // 只重建「界面框架」：标题、当前家庭、家庭下拉、页签栏（内容区交给 render / 缓存绘制）
 function renderChrome() {
   $("#projTitle").innerHTML = esc(state.projectName) + (isReadonly() ? ' <span class="tag off">已结束 · 只读</span>' : "");
-  $("#whoami").textContent = "当前：" + familyName(state.familyId);
+  setWhoami(familyName(state.familyId));
   renderFamilyMenu();
   $("#topMenu").classList.add("hidden"); // 界面重建时先收起下拉
   const nav = $("#tabs");
@@ -3028,7 +3037,7 @@ $("#content").addEventListener("click", async (e) => {
       });
       state.editingFamily = null;
       await loadFamilies();
-      if (Number(state.familyId) === Number(id)) $("#whoami").textContent = "当前：" + familyName(state.familyId);
+      if (Number(state.familyId) === Number(id)) setWhoami(familyName(state.familyId));
       clearFields("fam-edit-name-" + id, "fam-edit-count-" + id, "fam-edit-note-" + id);
       state.tabAt.settlement = 0;
       state.tabAt.overview = 0;

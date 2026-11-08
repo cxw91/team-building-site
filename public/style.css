@@ -59,6 +59,11 @@
   --brand-line: rgba(109, 91, 246, 0.32);
   --accent: #22d3ee;
   --accent-soft: rgba(22, 184, 212, 0.12);
+  /* 侧栏「双色标签条」：浅紫底横条 + 深紫字，深浅主题各配一套，
+     保证条底与侧栏有区分、右侧家庭名在两档主题下都够清楚。 */
+  --who-strip-bg: #eeedfe;
+  --who-strip-line: #afa9ec;
+  --who-strip-ink: #4b3fd4;
 
   /* 语义 */
   --ok: #0f7a52;
@@ -182,6 +187,11 @@ html[data-theme="dark"] {
   --brand-ink: #a99fff;
   --brand-soft: rgba(139, 124, 255, 0.16);
   --brand-line: rgba(139, 124, 255, 0.4);
+  /* 深色下的标签条：底色不能照搬浅色的浅紫（会像一块发光补丁），
+     改成半透明品牌紫叠在深色侧栏上；文字换成亮紫，保证对比度。 */
+  --who-strip-bg: rgba(139, 124, 255, 0.16);
+  --who-strip-line: rgba(139, 124, 255, 0.42);
+  --who-strip-ink: #b7adff;
   --accent: #22d3ee;
   --accent-soft: rgba(34, 211, 238, 0.14);
 
@@ -656,6 +666,96 @@ html[data-theme="dark"] .bg-vignette {
 
 #whoami {
   font-variant-numeric: tabular-nums;
+}
+
+/* ---------- 项目内头部：品牌头像 + 双色标签条 ---------- */
+/* 项目中心（#homeView）不加 --strip，仍是「logo + 两行标题」，完全不受影响。
+   标签条整行浅紫底圆角，三段靠左紧凑：项目名（沿用主标题色 --side-text）、
+   1px 细竖线、「当前 陈」（品牌紫粗体），条的右侧留白。纯展示：没有按钮、
+   箭头或点击行为，切换家庭依旧走右上角菜单。 */
+.side-top--strip {
+  gap: 9px;
+}
+
+/* 背景与描边都随内容收缩：不再 flex:1 拉满整条，宽度=内容宽（超长才被容器压缩）；
+   1px 描边用 inset 阴影，不改变布局尺寸，也不会把条撑高。 */
+.side-strip {
+  flex: 0 1 auto;
+  max-width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 7px 9px;
+  border-radius: 8px;
+  background: var(--who-strip-bg);
+  box-shadow: inset 0 0 0 1px var(--who-strip-line);
+  /* 家庭名不参与收缩，极端超长时由条自己裁切，保证内容不会跑到圆角边框外 */
+  overflow: hidden;
+}
+
+/* 三段靠左紧凑：竖线紧跟项目名、「当前 陈」紧跟竖线，条的右侧留白；
+   不再把家庭名推到条的最右端。
+   空间不足时收缩权重全给项目名（0 100 auto）：项目名先变省略号，家庭名始终
+   完整可读，避免出现「当前：…」只有前缀没有名字的情况。
+   项目名不再设百分比上限——条本身是「随内容收缩、最多到可用宽度」，
+   上限只会让项目名被过度截断、右侧白白空出一截。 */
+.side-strip__proj {
+  flex: 0 100 auto;
+  min-width: 24px;
+  color: var(--side-text);
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 项目结束时内容区已有整条只读横幅，条里不再重复塞「已结束 · 只读」小标签 */
+.side-strip__proj .tag {
+  display: none;
+}
+
+/* 竖线两端各多留 4px（叠加条内 5px gap → 每侧 9px），不再贴着项目名和「当前」 */
+.side-strip__sep {
+  flex: 0 0 1px;
+  width: 1px;
+  height: 12px;
+  margin: 0 4px;
+  background: var(--who-strip-line);
+}
+
+/* 家庭名完全不参与收缩（flex-shrink: 0）：宽度始终等于「当前：X」的自然宽度。
+   之前留了 1 的收缩权重，亚像素（0.4px）的收缩就会触发 text-overflow，
+   整段变成「当前：…」或多吃掉一个字——这正是手机端项目名一长家庭名就不全的原因。
+   空间不够时由项目名（收缩权重 100）让步。
+   max-width 兜底会形成循环约束，所以这里不用百分比：
+   条本身 overflow:hidden，极端超长的家庭名最多被条的圆角边框裁掉，不会顶出去。 */
+.side-strip__who {
+  flex: 0 0 auto;
+  color: var(--who-strip-ink);
+  font-size: 11.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 「当前：」是固定前缀，用伪元素生成；JS 只写家庭名，切家庭 / 改名都能同步。
+   中文全角冒号右侧自带字面空白，不再额外加 margin——多出的 1px 会让家庭名的
+   自然宽度比可容纳宽度多出不到 1px，正好触发省略号，把最后一个字吃掉。 */
+.side-strip__who::before {
+  content: "当前：";
+  font-weight: 500;
+  opacity: 0.72;
+}
+
+/* 会话恢复 / 首帧还没拿到家庭名时，不显示一条只有竖线和前缀的空标签 */
+.side-strip__who:empty,
+.side-strip:has(.side-strip__who:empty) .side-strip__sep {
+  display: none;
 }
 
 /* 导航列表：桌面纵向 */
@@ -1815,12 +1915,15 @@ input[type="number"] {
   padding: 11px 12px;
   border-radius: var(--r-md);
   border: 1px solid transparent;
+  /* 分隔线属于「每一行」而不是「第二行起」：原先写在 .row + .row 里，
+     每组列表的第一项（前面是 .section-head）永远拿不到线，看起来像缺了样式。
+     放到基类后首行与其余行上边界完全一致。 */
+  box-shadow: inset 0 1px 0 var(--line);
   transition: background 0.2s var(--ease), border-color 0.2s var(--ease);
 }
 
 .row + .row {
   margin-top: 2px;
-  box-shadow: inset 0 1px 0 var(--line);
 }
 
 .row:hover {
@@ -2575,13 +2678,13 @@ html[data-theme="dark"] .tone-red { color: #ff8fa5; }
   gap: 12px;
   padding: 10px 10px;
   border-radius: var(--r-sm);
+  /* 分隔线属于「每一行」而不是「第二行起」：原先只写在相邻兄弟规则里，
+     第一条日志永远拿不到顶边，看起来像缺了样式（与 .row 是同一类问题）。
+     放到基类后首行与其余行上边界完全一致。 */
+  border-top: 1px solid var(--line);
   font-size: 12.8px;
   line-height: 1.6;
   transition: background 0.18s var(--ease);
-}
-
-.log-item + .log-item {
-  border-top: 1px solid var(--line);
 }
 
 .log-item:hover {
@@ -3673,7 +3776,11 @@ html[data-theme="dark"] .theme-icon--moon {
   }
 
   /* 第一行：品牌 + 项目名 + 当前家庭。右侧要给顶栏那组按钮留出位置，
-     否则超长的项目名会一直顶到按钮底下。 */
+     否则超长的项目名会一直顶到按钮底下。
+     实测那组按钮（主题 / 项目中心 / 菜单）在 320~412px 上只占 100~116px，
+     原先预留 180px 会白白浪费 50~70px，把标签条挤到没有余量，
+     导致项目名一长家庭名就被省略成「当前：…」。这里收到 140px：
+     按钮左侧在最窄的 320px 上仍有 12px 以上空隙，标签条则多出 40px。 */
   .side-top {
     position: fixed;
     top: 0;
@@ -3681,7 +3788,7 @@ html[data-theme="dark"] .theme-icon--moon {
     right: 0;
     z-index: 70;
     height: 58px;
-    padding: 0 180px 0 14px;
+    padding: 0 150px 0 14px;
     padding-top: env(safe-area-inset-top, 0px);
     display: flex;
     align-items: center;
@@ -3714,6 +3821,27 @@ html[data-theme="dark"] .theme-icon--moon {
 
   .brand-sub {
     font-size: 11px;
+  }
+
+  /* 窄屏固定顶栏右侧要给按钮留位置，标签条再收紧一点 */
+  .side-strip {
+    gap: 4px;
+    padding: 6px 8px;
+  }
+
+  /* 窄屏空间紧，竖线两侧留 3px（叠加 gap → 每侧 7px），仍看得清分隔 */
+  .side-strip__sep {
+    margin: 0 3px;
+  }
+
+  .side-strip__proj,
+  .side-strip__who {
+    font-size: 11px;
+  }
+
+  /* 窄屏把项目名的收缩下限放到 12px（还能看到一个字符 + 省略号） */
+  .side-strip__proj {
+    min-width: 12px;
   }
 
   /* 切换家庭的菜单从按钮下方弹出，右对齐到按钮 */
@@ -4218,8 +4346,11 @@ html[data-theme="dark"] .theme-icon--moon {
     height: 30px;
   }
 
+  /* 顶栏按钮在超窄屏缩到 30×30、间距 5px，整组只占约 100px，
+     右侧预留跟着从 150px 收到 128px（仍留 16px 空隙），
+     否则这条会盖掉上面的 150px，把标签条重新挤窄 */
   .side-top {
-    padding-right: 160px;
+    padding-right: 128px;
   }
 
   #homeView .side-top {
