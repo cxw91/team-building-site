@@ -334,6 +334,9 @@ export async function onRequest(context) {
     }
 
     switch (route) {
+      case "page-data":
+        if (method !== "GET") return err("不支持的方法", 405);
+        return handlePageData(env, request, projectId, proj);
       case "families":
         return handleFamilies(env, method, id, request, projectId);
       case "members":
@@ -861,32 +864,35 @@ async function handleCarryItems(env, method, id, request, projectId) {
 }
 
 // ---------- 采购清单（公共，所有家庭可管理）----------
+// 采购清单读取：状态按采购记录现算（purchased=1 表示存在指向该项的采购记录），
+// 表里存的 status 只是同步结果、供概览统计用，对外读取一律以派生值为准。
+// 单接口 /api/shopping-items 与聚合接口 /api/page-data 共用这一份口径，避免两处数据不一致。
+async function readShoppingItems(env, projectId) {
+  const rows = await env.DB
+    .prepare(
+      `SELECT s.*, f.name AS claimed_family_name,
+              CASE WHEN EXISTS (
+                SELECT 1 FROM purchases p
+                 WHERE p.project_id = s.project_id
+                   AND (p.item_id = s.id OR (p.item_id IS NULL AND p.item_name = s.name))
+              ) THEN 1 ELSE 0 END AS purchased
+         FROM shopping_items s
+         LEFT JOIN families f ON f.id = s.claimed_family_id
+        WHERE s.project_id = ?
+        ORDER BY s.status, s.id`
+    )
+    .bind(projectId)
+    .all();
+  return (rows.results || []).map((r) => {
+    const row = Object.assign({}, r, { status: r.purchased ? "已购" : "待购" });
+    delete row.purchased;
+    return row;
+  });
+}
+
 async function handleShoppingItems(env, method, id, request, projectId) {
   if (method === "GET") {
-    // 带上认领家庭的名字，前端直接显示「谁接了任务」
-    // 状态按采购记录现算（purchased=1 表示存在指向该项的采购记录）：表里存的 status
-    // 只是同步结果、供概览统计用，对外读取一律以这儿的派生值为准。
-    const rows = await env.DB
-      .prepare(
-        `SELECT s.*, f.name AS claimed_family_name,
-                CASE WHEN EXISTS (
-                  SELECT 1 FROM purchases p
-                   WHERE p.project_id = s.project_id
-                     AND (p.item_id = s.id OR (p.item_id IS NULL AND p.item_name = s.name))
-                ) THEN 1 ELSE 0 END AS purchased
-           FROM shopping_items s
-           LEFT JOIN families f ON f.id = s.claimed_family_id
-          WHERE s.project_id = ?
-          ORDER BY s.status, s.id`
-      )
-      .bind(projectId)
-      .all();
-    const data = rows.results.map((r) => {
-      const row = Object.assign({}, r, { status: r.purchased ? "已购" : "待购" });
-      delete row.purchased;
-      return row;
-    });
-    return json({ ok: true, data });
+    return json({ ok: true, data: await readShoppingItems(env, projectId) });
   }
   if (method === "POST") {
     const b = await readJson(request);
@@ -1364,10 +1370,7 @@ async function handleLogClear(env, request, projectId, me) {
 }
 
 // ---------- 操作日志（项目内增量拉取）----------
-async function handleLogs(env, request, projectId) {
-  const url = new URL(request.url);
-  const since = parseInt(url.searchParams.get("since") || "0", 10) || 0;
-  const limit = Math.min(parseInt(url.searchParams.get("limit") || "200", 10) || 200, 500);
+async function readLogs(env, projectId, since, limit) {
   // 倒序取最新的 limit 条，再反转成时间正序返回。
   // 原来 ORDER BY id ASC LIMIT N 在日志超过 N 条后永远只返回最早那批，新日志再也拉不到；
   // 前端是全量拉取（since=0），轮询刷得再勤也看不到新增记录。倒序保证新日志一定在结果里。
@@ -1375,5 +1378,68 @@ async function handleLogs(env, request, projectId) {
     .prepare("SELECT * FROM logs WHERE project_id = ? AND id > ? ORDER BY id DESC LIMIT ?")
     .bind(projectId, since, limit)
     .all();
-  return json({ ok: true, data: (rows.results || []).slice().reverse() });
+  return (rows.results || []).slice().reverse();
+}
+
+async function handleLogs(env, request, projectId) {
+  const url = new URL(request.url);
+  const since = parseInt(url.searchParams.get("since") || "0", 10) || 0;
+  const limit = Math.min(parseInt(url.searchParams.get("limit") || "200", 10) || 200, 500);
+  return json({ ok: true, data: await readLogs(env, projectId, since, limit) });
+}
+
+// ---------- 聚合取数：一个页签（或整个项目）一次请求拿齐 ----------
+// 以前概览要并发 4 个 GET、采购记录 3 个 GET，进入项目还要把其余页签预热一遍（约 14 个请求）。
+// 现在把同一批查询放在 Worker 内部完成：HTTP 往返固定为 1 次，原有单接口全部保留给写操作和兼容路径。
+// version = logs 表当前最大 id，与前端版本探针的游标口径一致；响应里带上它，调用方就不必再发一次探针。
+// 只有 tab=all 与 tab=logs 才拉日志：概览并不展示日志，为它预热会让每次刷新都白传最多 200 条。
+// 日志页自己有 tab=logs，切过去时按 tabAt 防抖重新取一次，缓存行为不受影响。
+const PAGE_DATASETS = {
+  all: ["project", "families", "overview", "settlement", "logs", "carry-items", "shopping-items", "purchases"],
+  overview: ["overview", "settlement", "shopping-items"],
+  members: ["families"],
+  carry: ["carry-items"],
+  shopping: ["shopping-items"],
+  purchases: ["purchases", "shopping-items", "overview"],
+  settlement: ["settlement"],
+  logs: ["logs"],
+};
+
+async function readDataset(env, name, projectId, proj) {
+  switch (name) {
+    case "project":
+      return { id: proj.id, name: proj.name, status: proj.status, budget: proj.budget, bonus: proj.bonus };
+    case "families":
+      return (await env.DB.prepare("SELECT * FROM families WHERE project_id = ? ORDER BY id").bind(projectId).all()).results || [];
+    case "overview":
+      return computeOverview(env, projectId, proj);
+    case "settlement":
+      return computeSettlement(env, projectId);
+    case "logs":
+      return readLogs(env, projectId, 0, 200);
+    case "carry-items":
+      return (await env.DB.prepare("SELECT * FROM carry_items WHERE project_id = ? ORDER BY family_id, id").bind(projectId).all()).results || [];
+    case "shopping-items":
+      return readShoppingItems(env, projectId);
+    case "purchases":
+      return (await env.DB.prepare("SELECT * FROM purchases WHERE project_id = ? ORDER BY id DESC").bind(projectId).all()).results || [];
+    default:
+      return null;
+  }
+}
+
+async function handlePageData(env, request, projectId, proj) {
+  let tab = "all";
+  try { tab = new URL(request.url).searchParams.get("tab") || "all"; } catch {}
+  const names = PAGE_DATASETS[tab];
+  if (!names) return err("未知的页签：" + tab);
+  // version 必须先取：读数据期间若有新写入，其日志 id 会大于 version，下一轮探针仍能发现。
+  // 反过来（先读数据再取 version）会把尚未包含进响应的新日志也算进游标，导致变化被漏掉。
+  const v = (await env.DB.prepare("SELECT COALESCE(MAX(id), 0) AS v FROM logs WHERE project_id = ?").bind(projectId).first()) || {};
+  const version = Number(v.v) || 0;
+  // 数据集之间互不依赖，并发执行，避免串行把多个 RTT 叠成一次长等待
+  const values = await Promise.all(names.map((n) => readDataset(env, n, projectId, proj)));
+  const data = {};
+  names.forEach((n, i) => { data[n] = values[i]; });
+  return json({ ok: true, data, version });
 }

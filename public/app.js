@@ -26,6 +26,8 @@ let pollTimer = 0;                 // 探针定时器；声明放前面，show()
 let pollCursor = 0;                // 已见到的最大日志 id（项目全局版本号，只增不减）
 let pollCursorReady = false;       // 是否已建立基线：第一次不该被历史日志误判成「有变化」
 let lastActivity = 0;              // 最近一次用户交互时间
+let bootstrapReady = false;        // 进入项目时是否已用 ?tab=all 一次取齐七个页签的数据
+let useLegacyFetch = false;        // 聚合端点不可用（如前后端版本错配）：后续逐页取数改回原单接口
 // 只对「服务器数据」做指纹：UI 态（筛选、编辑、候选框）不参与，
 // 否则用户改个筛选条件也会被误判成数据变化而白重画一次。
 const POLL_STATE_KEYS = [
@@ -232,6 +234,64 @@ async function api(path, { method = "GET", body, withProject = true, adminPw, si
     if (timer) clearTimeout(timer);
     if (signal && relay) signal.removeEventListener("abort", relay);
   }
+}
+
+// ---------- 聚合取数 ----------
+// 后端 /api/page-data 一次返回一个页签所需的全部数据，并附带 version（项目当前最大日志 id）。
+// 所有页签的取数 / 刷新 / 重建统一走这里：原来概览 4 个 GET、采购记录 3 个 GET 现在都是 1 个。
+// version 与 pollVersion() 的游标口径一致，取到即可推进游标，不必再单独发一次探针。
+function bumpCursor(version) {
+  const v = Number(version);
+  if (!Number.isFinite(v)) return;
+  if (v > pollCursor) pollCursor = v;
+  pollCursorReady = true;
+}
+
+function applyPageData(d) {
+  if (!d || typeof d !== "object") return;
+  if (d.project) {
+    state.projectName = d.project.name || state.projectName;
+    state.projectStatus = d.project.status || "";
+  }
+  if (Array.isArray(d.families)) state.families = d.families;
+  if (d.overview !== undefined) state.overview = d.overview || {};
+  if (d.settlement !== undefined) state.settlement = d.settlement || {};
+  if (Array.isArray(d.logs)) state.logsList = d.logs;
+  if (Array.isArray(d["carry-items"])) state.carryItems = d["carry-items"];
+  // 采购清单与「登记采购」的名称候选共用同一批数据，两个缓存一起更新
+  if (Array.isArray(d["shopping-items"])) {
+    state.shoppingList = d["shopping-items"];
+    state.shopItems = d["shopping-items"];
+  }
+  if (Array.isArray(d.purchases)) state.purchases = d.purchases;
+}
+
+// 聚合端点不可用时的逐页回退：数据集名 → 原单接口路径，与后端 PAGE_DATASETS 一一对应。
+// 刻意不带 version：游标不推进，30 秒探针照常发现变化（旧后端同样有 /api/logs?since=...）。
+const LEGACY_DATASETS = {
+  overview: [["overview", "/overview"], ["settlement", "/settlement"], ["shopping-items", "/shopping-items"]],
+  members: [["families", "/families"]],
+  carry: [["carry-items", "/carry-items"]],
+  shopping: [["shopping-items", "/shopping-items"]],
+  purchases: [["purchases", "/purchases"], ["shopping-items", "/shopping-items"], ["overview", "/overview"]],
+  settlement: [["settlement", "/settlement"]],
+  logs: [["logs", "/logs?since=0"]],
+};
+
+async function loadPageData(tab, signal) {
+  let r;
+  if (useLegacyFetch) {
+    const pairs = LEGACY_DATASETS[tab] || [];
+    const res = await Promise.all(pairs.map(([, path]) => api(path, { signal })));
+    const data = {};
+    pairs.forEach(([name], i) => { data[name] = res[i] && res[i].data; });
+    r = { data };
+  } else {
+    r = await api("/page-data?tab=" + encodeURIComponent(tab), { signal });
+  }
+  applyPageData(r && r.data);
+  bumpCursor(r && r.version);
+  return r;
 }
 
 function toast(msg) {
@@ -911,6 +971,8 @@ try {
 function resetTabCache() {
   // 版本游标是项目级的：换项目后旧项目的日志 id 可能更大，不归零就永远探不到新变化
   resetPollingCursor();
+  bootstrapReady = false;
+  useLegacyFetch = false;     // 每次进项目重新试一次聚合接口，别把上次的降级结论带过来
   state.tabReady = {};
   state.tabAt = {};
   state.revalidating = {};
@@ -940,17 +1002,46 @@ async function enterProject(id, name) {
   state.editingPurchase = null;
   state.purMenuId = null;
   resetTabCache(); // 换项目：清掉上一个项目的页签缓存
-  // 项目名可能已改名，状态也可能变了，取一次最新的；家庭列表与它互不依赖，
-  // 两个请求并行发，自动恢复登录时少一个串行 RTT（原来这里要等两趟网络）。
   state.projectStatus = (state.projects.find((p) => p.id === state.projectId) || {}).status || "";
-  const [detail] = await Promise.all([
-    api("/projects/" + state.projectId, { withProject: false }).catch(() => null),
-    loadFamilies(),
-  ]);
-  const d = detail && detail.data;
-  if (d && d.project) {
-    state.projectName = d.project.name;
-    state.projectStatus = d.project.status;
+  // 一次请求取齐项目信息与七个页签的数据：替代原来的「项目详情 + 家庭」两请求、
+  // 首屏 render() 的当前页签取数，以及对其余页签的批量预热（约 14 个请求）。
+  // tab=all 成了单点，失败时先重试一次（多数是偶发超时）；两次都失败通常是聚合端点不可用
+  //（例如前后端版本错配），此时只取最小数据保证还能进项目，后续逐页取数回退到原单接口。
+  let bootstrapped = false;
+  for (let attempt = 0; attempt < 2 && !bootstrapped; attempt++) {
+    try {
+      // 第二次缩短超时：连续失败时别让用户等两个 10 秒才看到降级结果
+      const r = await api("/page-data?tab=all", attempt ? { timeoutMs: 4000 } : {});
+      applyPageData(r && r.data);
+      bumpCursor(r && r.version);
+      bootstrapped = true;
+    } catch {}
+  }
+  if (bootstrapped) {
+    const now = Date.now();
+    TABS.forEach((t) => {
+      state.tabReady[t.key] = true;
+      state.tabAt[t.key] = now;
+    });
+    bootstrapReady = true;
+    useLegacyFetch = false;
+  } else {
+    // 降级：只取项目详情与家庭列表（选择家庭界面与首屏必需），其余页签交给 render() 逐页拉。
+    // 不标记任何 tabReady，showApp() 会走正常 render()，由 fetcher 用单接口把当前页签补齐。
+    useLegacyFetch = true;
+    bootstrapReady = false;
+    try {
+      const [detail] = await Promise.all([
+        api("/projects/" + state.projectId, { withProject: false }).catch(() => null),
+        loadFamilies().catch(() => {}),
+      ]);
+      const d = detail && detail.data;
+      if (d && d.project) {
+        state.projectName = d.project.name || state.projectName;
+        state.projectStatus = d.project.status || "";
+      }
+    } catch {}
+    toast("数据加载失败，已切换为逐页加载");
   }
   const saved = Number(localStorage.getItem(familyKey(state.projectId))) || null;
   if (saved && state.families.some((f) => f.id === saved)) {
@@ -1178,10 +1269,9 @@ function showApp() {
   show("appView");
   renderChrome();
   showSkeleton(); // 首屏取数前先给即时反馈，别让内容区空等
-  const ready = render();
-  // 数据刷新三条路：切页签 / 主动操作 / 切回前台各刷一次，外加 30 秒版本探针兜底
-  //（只在数据真变了才拉业务接口）。探针由 show("appView") 统一启动，这里不用再管。
-  Promise.resolve(ready).then(prefetchRest).catch(() => {});
+  // bootstrap 已把七个页签的数据取齐时只重画、不发请求；后续刷新仍由切页签 / 主动操作 /
+  // 切回前台 / 30 秒版本探针驱动。探针由 show("appView") 统一启动，这里不用再管。
+  render({ skipFetch: bootstrapReady }).catch(() => {});
 }
 
 // ---------- 版本探针：只在数据真的变了才拉业务接口 ----------
@@ -1419,7 +1509,16 @@ function abortAllLoads() {
   }
 }
 
-async function render() {
+async function render({ skipFetch = false } = {}) {
+  // 进入项目时 bootstrap 已一次取齐七个页签：这里只重画，绝不再发请求。
+  // 只有 showApp() 会传 skipFetch；写操作后的 render() 仍走下面的整页取数，保证拿到最新数据。
+  if (skipFetch && state.tabReady[state.tab]) {
+    const snap = snapshotForm();
+    if (paintTab(state.tab)) {
+      restoreForm(snap);
+      return true;
+    }
+  }
   // 页面重建是异步的（各页先拉接口、之后再整体赋值 #content）。轮询触发的重建与用户切页签可能交错：
   // 旧页签的重建会在稍后把内容盖回旧页签，于是出现「页签高亮在新页、内容还是旧页」的错位。
   // 现在用代次 + AbortController 直接作废上一轮，再保留最多 3 轮兜底，防止打转。
@@ -1535,38 +1634,7 @@ async function revalidate(tab, { poll = false } = {}) {
   }
 }
 
-// 进入项目后预热其余页签：第一次切到任意页签也能先画缓存、立刻响应，再后台刷新。
-// 原来是 for + await 串行，慢网络下最后一个页签要等前面全部 RTT 才有缓存；
-// 现在改成 3 路并发，并按「当前页签 → 概览 → 其余」排序，常用的先 ready。
-let prefetching = false;
-async function prefetchRest() {
-  if (prefetching) return;
-  prefetching = true;
-  const signal = bgSignal();
-  try {
-    const order = [state.tab, "overview", ...TABS.map((x) => x.key).filter((k) => k !== state.tab && k !== "overview")];
-    const queue = order.filter((t) => !state.tabReady[t] && FETCHERS[t]);
-    let cursor = 0;
-    const worker = async () => {
-      while (cursor < queue.length) {
-        // 换项目 / 退出登录时 bgCtrl 被整体作废：立刻收工，别把旧项目数据写进新项目的缓存
-        if (signal.aborted) return;
-        const t = queue[cursor++];
-        if ($("#appView").classList.contains("hidden")) return; // 已离开主界面就不预热
-        try {
-          await FETCHERS[t](signal);
-          if (signal.aborted) return;
-          state.tabReady[t] = true;
-          // 不写 state.tabAt[t]：让用户切到该页签时的 revalidate 正常跑一次，
-          // 避免「进入项目后 1 秒内切过去就不刷新」。
-        } catch {}
-      }
-    };
-    await Promise.all([worker(), worker(), worker()]); // 限 3 路并发，别一次打满后端
-  } finally {
-    prefetching = false;
-  }
-}
+// 页签预热不再需要：进入项目时 /api/page-data?tab=all 已一次取齐全部页签数据并标记 ready。
 
 // 项目已结束：整页切成查看模式，禁掉一切编辑入口（后端也会拒）
 // 纯查看类控件（采购清单筛选条、空态里的「清除筛选」）带 data-readonly-keep，
@@ -1752,19 +1820,8 @@ function renderBonusPanel({ focusInput = false } = {}) {
 
 // ---------- 概览 ----------
 async function fetchOverview(signal) {
-  // 概览要用的四个接口互不依赖，并发拉取，别让网络延迟叠成四倍
-  const [o, st, logs, shop] = await Promise.all([
-    api("/overview", { signal }),
-    api("/settlement", { signal }),
-    api("/logs?since=0", { signal }), // 日志页要完整列表，这里拉全量；概览自己不展示日志
-    api("/shopping-items", { signal }), // 任务接单图表按「哪家接了、买到没有」统计
-  ]);
-  state.overview = o.data; // 缓存一份，供「修改预算 / 取消」局部重画时取用
-  state.settlement = st.data || {}; // 后端返回 data: null 时给个空对象，paintOverview 里不解构就不会炸
-  state.logsList = logs.data || [];
-  // 与采购清单页共用一份数据：两个缓存一起更新，切页签时接单状态立刻可见（同 claimShopping 里的约定）
-  state.shoppingList = shop.data || [];
-  state.shopItems = state.shoppingList;
+  // 概览 + 结算摘要 + 日志缓存 + 接单统计，后端聚合成 1 个 /api/page-data?tab=overview
+  return loadPageData("overview", signal);
 }
 
 function paintOverview() {
@@ -1892,8 +1949,8 @@ function paintCurrentTab() {
 }
 
 async function fetchMembers(signal) {
-  // 人数与备注都挂在家庭上，成员页直接读 state.families；这里只需确保家庭列表是最新的。
-  await loadFamilies(signal);
+  // 人数与备注都挂在家庭上，成员页直接读 state.families；只需确保家庭列表是最新的。
+  return loadPageData("members", signal);
 }
 
 // 只重画成员页内容（用 state.families 缓存），供纯前端切换调用。
@@ -1956,7 +2013,7 @@ function paintMembers() {
 
 // ---------- 携带物品 ----------
 async function fetchCarry(signal) {
-  state.carryItems = (await api("/carry-items", { signal })).data || [];
+  return loadPageData("carry", signal);
 }
 
 // 携带物品单行：只放开「数量」编辑，名称是添加时定的标识、不提供改名；
@@ -2047,7 +2104,7 @@ return `<div class="section${isMine ? "" : " readonly"}">
 
 // ---------- 采购清单 ----------
 async function fetchShopping(signal) {
-  state.shoppingList = (await api("/shopping-items", { signal })).data || [];
+  return loadPageData("shopping", signal);
 }
 
 // ---------- 采购清单筛选 ----------
@@ -2553,11 +2610,8 @@ $("#content").addEventListener("keydown", (e) => {
 
 // ---------- 采购记录 ----------
 async function fetchPurchases(signal) {
-  // 三个接口互不依赖，并发拉取
-  const [p, s, o] = await Promise.all([api("/purchases", { signal }), api("/shopping-items", { signal }), api("/overview", { signal })]);
-  state.purchases = p.data || [];
-  state.shopItems = s.data || [];
-  state.overview = o.data || {};
+  // 采购明细 + 名称候选 + 预算，后端聚合成 1 个 /api/page-data?tab=purchases
+  return loadPageData("purchases", signal);
 }
 
 // 采购明细里的一行。抽成函数是为了让「整页重画」与「登记成功后就地插一行」共用同一份模板，
@@ -2932,7 +2986,7 @@ function applyPurchaseAdded(rec) {
 
 // ---------- 结算 ----------
 async function fetchSettlement(signal) {
-  state.settlement = (await api("/settlement", { signal })).data || {};
+  return loadPageData("settlement", signal);
 }
 
 function paintSettlement() {
@@ -3038,7 +3092,7 @@ function paintSettlement() {
 
 // ---------- 日志 ----------
 async function fetchLogs(signal) {
-  state.logsList = (await api("/logs?since=0", { signal })).data || [];
+  return loadPageData("logs", signal);
 }
 
 function paintLogs() {
@@ -3689,8 +3743,9 @@ $("#logoutBtn2").addEventListener("click", logout);
 $("#backHomeBtn").addEventListener("click", showHome);
 // 「项目中心」入口已挪进右上角汉堡菜单（#topMenu 里的 data-action="go-home"），
 // 顶栏不再单独占一个按钮；选择家庭页的「返回项目中心」仍直接调 showHome。
-// 手动刷新：绕开 1 秒防抖立刻重取当前页签，顺手把版本游标推进到最新，
-// 免得紧接着的探针又拿同一批变化触发一次重复拉取。按钮只在点击时发请求，零空闲开销。
+// 手动刷新：绕开 1 秒防抖立刻重取当前页签。聚合响应的 version 会顺手把版本游标推进到最新，
+// 免得紧接着的探针又拿同一批变化触发一次重复拉取，因此这里只需 1 个请求。
+// 按钮只在点击时发请求，零空闲开销。
 // 动画：点下就加 .is-refreshing（图标转圈 + 品牌色高亮），转满至少一圈再收，
 // 结束时放一圈扩散光环（.is-done）。网络再快也不会「闪一下就没了」。
 const REFRESH_SPIN_MS = 600; // 与 style.css 里 #refreshBtn.is-refreshing .ico 的 spin 周期一致
@@ -3708,7 +3763,6 @@ $("#refreshBtn").addEventListener("click", async (e) => {
   try {
     state.tabAt[state.tab] = 0;
     await revalidate(state.tab);
-    await pollVersion().catch(() => {});
   } finally {
     // 至少转满一圈：请求比一圈还快时补一点时间，避免图标刚启动就被掐掉
     const rest = Math.max(0, REFRESH_SPIN_MS - (Date.now() - started));
