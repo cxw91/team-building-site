@@ -4,7 +4,7 @@
    --------------------------------------------------------------------------
    约定：本文件只负责视觉。所有 id / data-action / 类名契约由 app.js 决定，
    不得改动含义（.tab 会被整体重建、.proj-card .actions 有布局判定、
-   .badge 会被动态插入、.hidden 用于视图与弹层切换）。
+   .hidden 用于视图与弹层切换）。
    ========================================================================== */
 
 /* 流光角度：注册成 <angle> 才能补间，conic-gradient 的起始角才会绕圈走。
@@ -32,6 +32,8 @@
   --surface: #ffffff;
   --surface-2: #f6f7fc;
   --surface-3: #eef0f8;
+  /* 骨架屏微光：浅色主题下用偏白的亮带扫过浅灰底 */
+  --sk-shine: rgba(255, 255, 255, 0.62);
   /* 非自家 / 非自己家庭的只读卡片：灰调底 + 虚线边，与自家卡片（白底 + 浅紫实线边）区分 */
   --ro-surface: #eef0f6;
   --ro-line: rgba(15, 22, 48, 0.28);
@@ -74,6 +76,9 @@
   --danger: #cf1c45;
   --danger-bg: #fff0f4;
   --danger-line: rgba(207, 28, 69, 0.3);
+  /* 删除确认弹窗「确定删除」的底色：柔和红 + 白字。
+     比纯 --danger 亮一档、饱和度更低；再亮白字对比度就会掉到 4.5:1 以下。 */
+  --danger-fill: #d23a5f;
 
   /* 只读提示条（项目已结束后置顶的一条琥珀色告示）。
      用琥珀而不是品牌紫：紫色在这套界面里到处都是，告示条混进去就不像「提示」了；
@@ -168,6 +173,8 @@ html[data-theme="dark"] {
   --surface: #131829;
   --surface-2: #191f32;
   --surface-3: #212940;
+  /* 深色底上白亮带会刺眼，压到很淡的一层高光即可 */
+  --sk-shine: rgba(255, 255, 255, 0.07);
   /* 深色下只读卡片：比自家卡片更暗、更灰，虚线边用亮一档的中性白 */
   --ro-surface: #0c101b;
   --ro-line: rgba(255, 255, 255, 0.32);
@@ -200,6 +207,8 @@ html[data-theme="dark"] {
   --danger: #ff8fa5;
   --danger-bg: #2c111a;
   --danger-line: rgba(255, 143, 165, 0.32);
+  /* 深色下同档柔和红，仍比亮粉的 --danger 深，保证白字对比度 */
+  --danger-fill: #c84060;
 
   /* 深色下的只读提示：底色用不透明的暖深棕。
      不能用「半透明琥珀」——页面背后有极光光团，半透明底会把紫色透上来，
@@ -525,6 +534,49 @@ html[data-theme="dark"] .bg-vignette {
   flex: 0 0 15px;
   width: 15px;
   height: 15px;
+}
+
+/* 顶栏「刷新」按钮动画：点下去图标转圈、按钮染品牌色，结束时放一圈扩散光环。
+   图标在 hover 时保持静止（不做偏转动画），只保留所有顶栏按钮通用的 hover 变色。
+   纯装饰；进行中 / 可用状态另由 aria-busy 与 disabled 表达。
+   转圈复用下方「加载态：转圈」的 @keyframes spin（keyframes 与源码顺序无关）。 */
+#refreshBtn {
+  position: relative;
+}
+#refreshBtn .ico {
+  /* 显式固定旋转中心：SVG 元素的 transform-origin 默认值各浏览器不完全一致 */
+  transform-origin: 50% 50%;
+}
+#refreshBtn.is-refreshing {
+  color: var(--brand-ink);
+  border-color: var(--brand-line);
+  background: var(--brand-soft);
+  opacity: 1; /* 盖掉 button:disabled 的 0.5：转圈时按钮不该灰掉 */
+  cursor: progress;
+}
+#refreshBtn.is-refreshing .ico {
+  animation: spin 0.6s linear infinite;
+}
+#refreshBtn::after {
+  content: "";
+  position: absolute;
+  inset: -1px;
+  border: 1px solid var(--brand-line);
+  border-radius: inherit;
+  opacity: 0;
+  pointer-events: none;
+}
+#refreshBtn.is-done::after {
+  animation: refresh-ring 0.6s var(--ease) both;
+}
+@keyframes refresh-ring {
+  from { opacity: 0.85; transform: scale(1); }
+  to   { opacity: 0; transform: scale(1.22); }
+}
+@media (prefers-reduced-motion: reduce) {
+  #refreshBtn.is-refreshing .ico,
+  #refreshBtn.is-done::after { animation: none; }
+  #refreshBtn::after { display: none; }
 }
 
 .content {
@@ -945,33 +997,6 @@ html[data-theme="dark"] .bg-vignette {
   --icon: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='1.8' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='8.4'/%3E%3Cpath d='M12 7.4V12l3.1 2'/%3E%3C/svg%3E");
 }
 
-/* 页签上的新日志徽标 */
-.badge {
-  position: absolute;
-  top: 5px;
-  right: 8px;
-  min-width: 17px;
-  height: 17px;
-  padding: 0 5px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 999px;
-  background: linear-gradient(135deg, #f472b6, #e548a8);
-  color: #fff;
-  font-size: 10.5px;
-  font-weight: 700;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-  box-shadow: 0 0 0 2px var(--side-bg), 0 0 14px rgba(229, 72, 168, 0.7);
-  animation: badge-pop 0.35s var(--ease-spring) both;
-}
-
-@keyframes badge-pop {
-  from { transform: scale(0.4); opacity: 0; }
-  to { transform: scale(1); opacity: 1; }
-}
-
 /* 切换家庭：按钮在顶栏右侧，菜单从按钮下方弹出并右对齐 */
 .switch-wrap {
   position: relative;
@@ -1032,7 +1057,9 @@ html[data-theme="dark"] .bg-vignette {
   box-shadow: inset 0 0 0 1px var(--side-active-ring);
 }
 
-/* 顶栏汉堡菜单（由「退出」按钮改来）：里面列全部家庭（点即切换）+ 退出 */
+/* 顶栏汉堡菜单：切换家庭（子菜单）、项目中心、退出。
+   「项目中心」原先是顶栏一个独立按钮，现在收进下拉里、放在「退出」上面，
+   顶栏只留 刷新 / 主题 / 菜单，390px 窄屏下也不挤。 */
 .top-dropdown {
   position: absolute;
   right: 0;
@@ -1104,12 +1131,23 @@ html[data-theme="dark"] .bg-vignette {
   height: 18px;
   flex: 0 0 18px;
 }
+/* 删除确认弹窗的「确定删除」：实心危险色底 + 白字，深浅主题各一份 --danger-fill。
+   之前只写了 background: var(--danger-fill) 但变量没定义，整条声明失效 → 按钮透明底；
+   同时要显式给 color，否则后面 .danger 会把文字也染成红色，变成红底红字。
+   阴影也从 .primary 的紫色换成危险色，避免红按钮配紫光。 */
 .modal-actions .primary.danger {
+  color: #fff;
   background: var(--danger-fill);
   border-color: var(--danger-fill);
+  box-shadow:
+    0 14px 30px -16px rgba(210, 58, 95, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.22);
 }
 .modal-actions .primary.danger:hover {
   filter: brightness(1.05);
+  box-shadow:
+    0 20px 40px -18px rgba(210, 58, 95, 0.7),
+    inset 0 1px 0 rgba(255, 255, 255, 0.3);
 }
 
 .family-item .hint {
@@ -1316,6 +1354,23 @@ button[aria-disabled="true"] {
   opacity: 0.5;
   cursor: not-allowed;
   transform: none !important;
+}
+
+/* 禁用态的「删除」不能只是把危险红调暗 —— 那看着仍像个能点的删除。
+   统一压成中性灰并去掉 hover 反馈，和红色可点态一眼可分。
+   覆盖采购清单「已购」行、以及项目结束只读时被整体禁用的行内删除。
+   选择器特异性高于上面的 .link.danger / .link.danger:hover，无需 !important。 */
+.link.danger:disabled,
+.link.danger[aria-disabled="true"],
+.link.danger.del-off {
+  color: var(--muted);
+  background: transparent;
+  border-color: transparent;
+}
+.link.danger:disabled:hover,
+.link.danger[aria-disabled="true"]:hover,
+.link.danger.del-off:hover {
+  background: transparent;
 }
 
 .ico {
@@ -1614,6 +1669,90 @@ input[type="number"] {
   font-size: 13px;
   text-align: center;
   background: var(--surface-2);
+}
+
+/* ---------- 加载反馈：骨架屏 / 失败重试 ----------
+   整页取数前先把 #content 换成占位块，弱网下也不会出现「侧栏切了、内容不动」。
+   占位块的栅格与真实 .cards 对齐，数据回来重画时版面不跳。
+   颜色全走主题令牌，深浅主题自动适配；微光只叠半透明亮带，不写死灰。 */
+.loading-skeleton {
+  padding: 4px 0;
+}
+
+.sk-hint {
+  margin: 0 0 14px;
+}
+
+.sk-cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+.sk {
+  position: relative;
+  display: block;
+  overflow: hidden;
+  border-radius: var(--r-md);
+  background: var(--surface-3);
+}
+
+.sk::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 20%, var(--sk-shine) 50%, transparent 80%);
+  transform: translateX(-100%);
+  animation: sk-shimmer 1.35s ease-in-out infinite;
+}
+
+.sk-card {
+  height: 88px;
+  border-radius: var(--r-lg);
+}
+
+.sk-section {
+  display: grid;
+  gap: 12px;
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--surface-2);
+}
+
+.sk-line {
+  width: 100%;
+  height: 12px;
+}
+
+.sk-line.w40 { width: 40%; }
+.sk-line.w60 { width: 60%; }
+.sk-line.w80 { width: 80%; }
+
+@keyframes sk-shimmer {
+  to { transform: translateX(100%); }
+}
+
+.load-error {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+}
+
+.load-error p { margin: 0; }
+
+@media (max-width: 1180px) {
+  .sk-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 560px) {
+  .sk-cards { gap: 10px; }
+  .sk-card { height: 74px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sk::after { animation: none; }
 }
 
 /* ---------- 概览 · 任务接单情况（每家一行的分段条形图） ---------- */
@@ -2543,6 +2682,12 @@ html[data-theme="dark"] .card .num {
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
+}
+
+/* 「每家应摊」按人数加权时显示 min ~ max 区间，收小字号避免撑破卡片 */
+.card .num.range {
+  font-size: 16px;
+  letter-spacing: -0.02em;
 }
 
 .card .lbl {
@@ -3918,12 +4063,6 @@ html[data-theme="dark"] .theme-icon--moon {
     max-width: 100%;
   }
 
-  .badge {
-    top: 2px;
-    right: 6px;
-    transform: scale(0.9);
-  }
-
   .nav-count {
     display: none;
   }
@@ -4049,6 +4188,10 @@ html[data-theme="dark"] .theme-icon--moon {
 
   .card .num {
     font-size: 18px;
+  }
+
+  .card .num.range {
+    font-size: 14px;
   }
 
   .card .lbl {

@@ -19,7 +19,19 @@ const parseCountInput = (v) => {
 };
 
 // 几个反复出现的时长集中在这里，避免散落在各处
-const REVALIDATE_MS = 1000;  // 页签后台刷新的防抖窗口
+const REVALIDATE_MS = 1000;        // 页签后台刷新的防抖窗口
+const POLL_MS = 30000;             // 版本探针间隔：只问「数据变没变」，不拉业务数据
+const POLL_IDLE_MS = 5 * 60 * 1000; // 无交互超过这么久就暂停探针，省 Workers 请求额度
+let pollTimer = 0;                 // 探针定时器；声明放前面，show() 在文件更早处就会用到
+let pollCursor = 0;                // 已见到的最大日志 id（项目全局版本号，只增不减）
+let pollCursorReady = false;       // 是否已建立基线：第一次不该被历史日志误判成「有变化」
+let lastActivity = 0;              // 最近一次用户交互时间
+// 只对「服务器数据」做指纹：UI 态（筛选、编辑、候选框）不参与，
+// 否则用户改个筛选条件也会被误判成数据变化而白重画一次。
+const POLL_STATE_KEYS = [
+  "families", "overview", "settlement", "logsList",
+  "carryItems", "shoppingList", "shopItems", "purchases",
+];
 const MODAL_TIGHT_H = 480;   // 软键盘弹出后弹窗切「贴顶 + 内部滚动」的高度阈值
 const FOCUSOUT_DELAY = 150;  // 候选框 focusout 延迟收起
 const FOCUS_CORRECT_DELAY = 80; // 输入框聚焦后校正弹窗位置
@@ -33,6 +45,38 @@ function fmtTime(s) {
   if (isNaN(d.getTime())) return String(s);
   const p = (n) => String(n).padStart(2, "0");
   return `${d.getMonth() + 1}月${d.getDate()}日 ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// 概览 / 结算共用的「每家应摊」卡片。
+// 口径一律以后端 effective_mode 为准：项目选了「按人数」但所有家庭都是 0 人时，后端会临时
+// 退回按家庭数均分（person_fallback），而 split_mode 仍是 person。用它判断展示口径会把
+// 「每家」的金额标成「人均」，出现「共 0 人」却算出人均金额这种自相矛盾的展示。
+// 数值由 detail 里各家的实际应摊得出：按人数加权时各家差异较大，展示最小～最大区间；
+// 按家庭数均分（含 0 人兜底）时展示每家平均值，能直接和结算表对照。
+// 括号里只留人数 / 家数 / 兜底原因，不再重复「按人数加权」「含奖金池」这类口径说明：
+// 这些信息已由「每家结算」表头的「分摊口径」和表格下方说明承担。
+function shareCardHtml(st) {
+  const s = st || {};
+  const detail = s.detail || [];
+  const count = detail.length;
+  const people = Number(s.person_count) || 0;
+  // effective_mode 由后端返回；旧版本响应缺少该字段时，用可判断的组合条件兜底
+  const byPerson = s.effective_mode
+    ? s.effective_mode === "person" && !s.person_fallback
+    : s.split_mode === "person" && !s.person_fallback && people > 0;
+  if (!count) return '<div class="card"><div class="num">—</div><div class="lbl">每家应摊</div></div>';
+  const shares = detail.map((d) => Number(d.share) || 0);
+  const min = Math.min(...shares);
+  const max = Math.max(...shares);
+  if (byPerson) {
+    const same = Math.abs(max - min) < 0.005;
+    const numTxt = same ? money(min) : `${money(min)} ~ ${money(max)}`;
+    const title = same ? "每家应摊" : "每家应摊区间";
+    return `<div class="card"><div class="num${same ? "" : " range"}">${numTxt}</div><div class="lbl">${title}（共 ${people} 人）</div></div>`;
+  }
+  const avg = shares.reduce((a, b) => a + b, 0) / count;
+  const basis = s.person_fallback ? `暂无人数 · 暂按 ${count} 家均分` : `${count} 家均分`;
+  return `<div class="card"><div class="num">${money(avg)}</div><div class="lbl">每家应摊（${basis}）</div></div>`;
 }
 
 const TABS = [
@@ -54,8 +98,6 @@ const state = {
   projects: [],
   projectsAt: 0,        // 项目列表上次成功取数的时间戳：回到项目中心时据此判断要不要再刷一次
   tab: "overview",
-lastLogId: 0,
-  newLogs: 0,
   pending: null,        // 待确认删除：{ kind, id }
   editingFamily: null,  // 正在编辑的家庭 id（名称 / 人数 / 备注一起改）
   editingShop: null,    // 正在改「数量 / 单位」的采购项 id
@@ -82,7 +124,7 @@ shopItems: [],        // 采购清单里的物品，供「登记一笔采购」�
   purSuggestOpen: false,// 名称候选框是否展开
   purActive: -1,        // 候选框里键盘高亮到第几项
   settlement: null,     // 结算页缓存（切页签时先画缓存、再后台刷新）
-  logsList: [],         // 日志缓存：日志页与概览「最近操作」共用
+  logsList: [],         // 日志页缓存；概览取数时也会顺带刷新，切到日志页可先画缓存
   tabReady: {},         // 各页签是否已有可立即绘制的缓存数据（true=切过去即可先画，不必等网络）
   tabAt: {},            // 各页签上次成功取数的时间戳（毫秒，避免短时间内重复后台刷新）
   revalidating: {},     // 正在后台刷新中的页签，避免同一页签并发刷新
@@ -143,20 +185,53 @@ document.addEventListener("click", (e) => {
 });
 
 // ---------- 接口封装 ----------
-async function api(path, { method = "GET", body, withProject = true, adminPw } = {}) {
+async function api(path, { method = "GET", body, withProject = true, adminPw, signal, timeoutMs } = {}) {
   const headers = { "content-type": "application/json" };
   if (state.token) headers["authorization"] = "Bearer " + state.token;
   if (withProject && state.projectId) headers["x-project-id"] = String(state.projectId);
   if (state.familyId) headers["x-family-id"] = String(state.familyId);
   if (adminPw) headers["x-admin-passcode"] = String(adminPw);
-  const res = await fetch("/api" + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
-  const data = await res.json().catch(() => ({}));
-  if (res.status === 401) {
-    logout();
-    throw new Error("口令失效，请重新登录");
+  // 读请求默认 10s 超时，避免弱网下无限挂起、界面永远停在骨架屏；
+  // 写请求不自动超时：超时后用户重试可能造成重复提交，宁可交给按钮 loading 态盯着。
+  // signal 来自整页渲染的「代次」：切页签时会 abort 掉上一轮还在飞的请求。
+  const limit = timeoutMs === undefined ? (method === "GET" ? 10000 : 0) : timeoutMs;
+  const ctrl = new AbortController();
+  const timer = limit > 0 ? setTimeout(() => ctrl.abort(new DOMException("timeout", "TimeoutError")), limit) : 0;
+  const relay = signal ? () => ctrl.abort(signal.reason) : null;
+  if (signal) {
+    if (signal.aborted) ctrl.abort(signal.reason);
+    else signal.addEventListener("abort", relay, { once: true });
   }
-  if (!res.ok || data.ok === false) throw new Error(data.error || "请求失败");
-  return data;
+  try {
+    const res = await fetch("/api" + path, {
+      method,
+      headers,
+      body: body ? JSON.stringify(body) : undefined,
+      signal: ctrl.signal,
+    });
+    let data;
+    try {
+      data = await res.json();
+    } catch (e) {
+      if (ctrl.signal.aborted) throw e; // 取消 / 超时不当成「空响应」吞掉
+      data = {};
+    }
+    if (res.status === 401) {
+      logout();
+      throw new Error("口令失效，请重新登录");
+    }
+    if (!res.ok || data.ok === false) throw new Error(data.error || "请求失败");
+    return data;
+  } catch (e) {
+    if (ctrl.signal.aborted) {
+      if (signal && signal.aborted) throw new DOMException("请求已取消", "AbortError");
+      throw new Error("网络较慢，请求超时，请重试");
+    }
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (signal && relay) signal.removeEventListener("abort", relay);
+  }
 }
 
 function toast(msg) {
@@ -429,6 +504,7 @@ if (open) {
 // 弹出输入框 → 带上密码请求 → 密码不对可以重试 → 点取消则整个操作中止。
 // 该弹窗可能是叠在另一个弹窗（如「新建项目」表单）之上打开的，关闭时把下面那个还原回来，
 // 免得用户填到一半的表单被连带关掉、输入内容丢失。
+// 例外：下层是登录页的「管理口令」弹窗时，取消会连它一起关掉，直接回到输入口令界面。
 function askAdmin(reason, errText = "", hint = "") {
   return new Promise((resolve) => {
     const modal = $("#adminModal");
@@ -448,14 +524,19 @@ function askAdmin(reason, errText = "", hint = "") {
   });
 }
 
-// 关闭弹窗并恢复正常态：取消、请求成功、请求出错都会走这里
-function hideAdmin() {
+// 关闭弹窗并恢复正常态：取消、请求成功、请求出错都会走这里。
+// cancelled=true 表示用户在「需要管理权限」里主动放弃（点取消或在密码框按 Esc）。
+// 若下层是登录页的「管理口令」弹窗，取消就等于放弃整个管理口令流程：不再还原它，
+// 让它保持隐藏，页面直接回到输入口令的登录界面。
+// 验证成功 / 请求出错仍会还原；项目内其它叠层弹窗（新建项目表单等）也照旧还原。
+function hideAdmin(cancelled = false) {
   const modal = $("#adminModal");
   const prev = modal._prev || null;
   modal._prev = null;
   modal._resolve = null;
   setModalOpen(modal, false);
-  if (prev) setModalOpen(prev, true); // 还原被压在下面的弹窗
+  const dropPrev = cancelled && prev && prev.id === "pcModal";
+  if (prev && !dropPrev) setModalOpen(prev, true); // 还原被压在下面的弹窗
   $("#adminPw").value = "";
   $("#adminPw").disabled = false;
   $("#adminCancelBtn").disabled = false;
@@ -481,7 +562,7 @@ function cancelAdmin() {
   const modal = $("#adminModal");
   const resolve = modal._resolve;
   modal._resolve = null;
-  hideAdmin();
+  hideAdmin(true); // 放弃管理权限验证：下层若是「管理口令」弹窗，连它一起关掉回到登录页
   if (resolve) resolve(null);
 }
 
@@ -513,13 +594,19 @@ async function withAdmin(reason, run, hint = "") {
 function isPending(kind, id) {
   return state.pending && state.pending.kind === kind && Number(state.pending.id) === Number(id);
 }
+// 统一带 .danger：行内「删除」和其它地方（项目卡片 / 日志 / 口令）一样用危险色，
+// 不再混在「修改」的品牌紫里。禁用态另加 .del-off，由 CSS 压成中性灰，别和红色可点态混淆。
 function dangerCell(kind, id, actionName, label = "删除") {
-  return `<button class="link" data-action="${actionName}" data-kind="${kind}" data-id="${id}">${label}</button>`;
+  return `<button class="link danger" data-action="${actionName}" data-kind="${kind}" data-id="${id}">${label}</button>`;
 }
 
 // ---------- 视图切换 ----------
 function show(view) {
   ["loginView", "homeView", "pickView", "appView"].forEach((id) => $("#" + id).classList.toggle("hidden", id !== view));
+  // 轮询只在项目内主界面跑。所有视图切换都经过这里，一处启停即可覆盖
+  // 进入项目、返回项目中心、选择家庭、退出登录等全部入口，不用各处补 stop。
+  if (view === "appView") startPolling();
+  else stopPolling();
   // 星座连线仅用于口令登入页；其余页面清空画布、还原为原极光背景
   if (constellationCtl) {
     if (view === "loginView") constellationCtl.start();
@@ -579,6 +666,7 @@ async function afterLogin() {
 }
 
 function logout() {
+  abortAllLoads(); // 退出：作废所有在途取数，别让旧项目的响应回来污染登录态
   state.token = "";
   state.projectId = null;
   state.projectName = "";
@@ -586,8 +674,6 @@ function logout() {
   state.familyId = null;
   localStorage.removeItem("tb_token");
   localStorage.removeItem("tb_project");
-  state.lastLogId = 0;
-  state.newLogs = 0;
   state.pending = null;
   state.editingFamily = null;
   state.editingProject = null;
@@ -823,6 +909,8 @@ try {
 
 // 切换项目 / 退出登录时清空所有页签缓存，避免把上一个项目的数据画到新项目上
 function resetTabCache() {
+  // 版本游标是项目级的：换项目后旧项目的日志 id 可能更大，不归零就永远探不到新变化
+  resetPollingCursor();
   state.tabReady = {};
   state.tabAt = {};
   state.revalidating = {};
@@ -838,11 +926,12 @@ function resetTabCache() {
 }
 
 async function enterProject(id, name) {
+  // 换项目 / 自动恢复会话：先停掉上一个项目还在飞的预热与后台刷新。
+  // 否则旧项目的响应可能在新项目已经 resetTabCache() 之后写回 state，串数据。
+  abortAllLoads();
   state.projectId = Number(id);
   state.projectName = name || (state.projects.find((p) => p.id === state.projectId) || {}).name || "团建管理";
   localStorage.setItem("tb_project", String(state.projectId));
-  state.lastLogId = 0;
-  state.newLogs = 0;
   state.pending = null;
   state.editingFamily = null;
   state.editingBudget = false;
@@ -880,8 +969,8 @@ async function enterProject(id, name) {
 }
 
 // ---------- 家庭（项目内） ----------
-async function loadFamilies() {
-  state.families = (await api("/families")).data || [];
+async function loadFamilies(signal) {
+  state.families = (await api("/families", { signal })).data || [];
 }
 function familyName(id) {
   const f = state.families.find((x) => x.id === id);
@@ -1003,7 +1092,7 @@ function renderChrome() {
   $("#projTitle").innerHTML = esc(state.projectName) + (isReadonly() ? ' <span class="tag off">已结束 · 只读</span>' : "");
   setWhoami(familyName(state.familyId));
   renderFamilyMenu();
-  $("#topMenu").classList.add("hidden"); // 界面重建时先收起下拉
+  closeTopMenu(); // 界面重建时先收起下拉，同时复位汉堡按钮的 aria-expanded
   const nav = $("#tabs");
   // 页签按钮每次切换都会重建，但滑块必须留下来：只有同一个节点连续改 transform，
   // 浏览器才会把「旧位置 → 新位置」补成一段滑动，而不是瞬间跳过去。
@@ -1019,11 +1108,7 @@ function renderChrome() {
     "beforeend",
     TABS.map(
       (t) =>
-        `<button class="tab${t.key === state.tab ? " active" : ""}" data-tab="${t.key}">${t.label}` +
-        (t.key === "logs" && state.newLogs
-          ? `<span class="badge" aria-label="${state.newLogs} 条新日志">${state.newLogs}</span>`
-          : "") +
-        `</button>`
+        `<button class="tab${t.key === state.tab ? " active" : ""}" data-tab="${t.key}">${t.label}</button>`
     ).join("")
   );
   nav.insertBefore(glider, nav.firstChild);
@@ -1073,7 +1158,6 @@ window.addEventListener("resize", () => {
 function openTab(tab) {
   state.tab = tab;
   state.pending = null;
-  if (tab === "logs") state.newLogs = 0;
   // 离开采购记录页时把名称候选框收起，免得把「正开着」的状态带到下次切回来
   if (tab !== "purchases") state.purSuggestOpen = false;
   // 行内编辑态也不跨页签：切走就当放弃修改，回来是干净的列表
@@ -1082,23 +1166,124 @@ function openTab(tab) {
   if (tab !== "purchases") state.editingPurchase = null;
   if (tab !== "purchases") state.purMenuId = null;
   renderChrome();
+  abortLoads(); // 切页签：上一页签还在飞的请求立即作废
   if (paintTab(tab)) revalidate(tab);
-  else render();
+  else {
+    showSkeleton(); // 没缓存时先把反馈给出来，再慢慢取数
+    render();
+  }
 }
 
 function showApp() {
   show("appView");
   renderChrome();
+  showSkeleton(); // 首屏取数前先给即时反馈，别让内容区空等
   const ready = render();
-  // 不再做 10 秒轮询：数据只在切页签、主动操作、以及从后台切回前台时刷新
+  // 数据刷新三条路：切页签 / 主动操作 / 切回前台各刷一次，外加 30 秒版本探针兜底
+  //（只在数据真变了才拉业务接口）。探针由 show("appView") 统一启动，这里不用再管。
   Promise.resolve(ready).then(prefetchRest).catch(() => {});
 }
 
-// 从别的标签页 / 后台切回时补一次刷新，替代原来的定时轮询
-document.addEventListener("visibilitychange", () => {
+// ---------- 版本探针：只在数据真的变了才拉业务接口 ----------
+// 切页签 / 自己操作 / 切回前台都会刷新；停在一个页签看时，靠一个廉价心跳跟上别人的改动。
+// 后端所有写操作都 addLog，logs.id 是 AUTOINCREMENT（单调递增、删日志也不复用），
+// 所以「有没有 id 大于已见最大值的日志」=「项目数据有没有变」。
+// 心跳只发 1 个走主键索引、最多返回 1 行的 GET；有变化才 revalidate 当前页签。
+// 原来是每 10 秒无条件拉当前页签全量（概览 4 个 GET、采购记录 3 个），
+// Workers Free 只有 10 万请求/天，几个人把页面开着就能打满。
+async function pollVersion() {
+  const r = await api("/logs?since=" + pollCursor + "&limit=1", { signal: bgSignal() });
+  const rows = (r && r.data) || [];
+  const maxId = rows.reduce((m, x) => Math.max(m, Number(x.id) || 0), pollCursor);
+  // 首次只建立基线：项目本来就有历史日志，不该因此白拉一次全量
+  const changed = pollCursorReady && rows.length > 0;
+  pollCursor = maxId; // 只增不减：日志被清空后新日志 id 仍然更大，下次照样能检测到
+  pollCursorReady = true;
+  return changed;
+}
+
+function resetPollingCursor() {
+  pollCursor = 0;
+  pollCursorReady = false;
+  markActivity();
+}
+
+function markActivity() {
+  lastActivity = Date.now();
+}
+
+// 用户还在操作就继续探；发呆超过 POLL_IDLE_MS 就停，避免夜间挂着页面空转烧额度。
+// 动一下鼠标 / 敲一下键盘 / 切回前台都会重新计时，刷新按钮也能立刻要一次数据。
+["pointerdown", "keydown", "wheel", "touchstart"].forEach((ev) => {
+  document.addEventListener(ev, markActivity, { passive: true });
+});
+
+function dataFingerprint() {
+  return JSON.stringify(POLL_STATE_KEYS.map((k) => state[k] ?? null));
+}
+
+// 轮询会整体重建 #content，正在填写 / 编辑 / 弹窗期间一律跳过，
+// 否则光标位置、输入法组合、行内未提交内容都可能被打断。
+function isEditingNow() {
+  const s = state;
+  if (s.pending || s.editingFamily != null || s.editingProject != null ||
+      s.editingShop != null || s.editingCarry != null || s.editingPurchase != null ||
+      s.editingBudget || s.editingBonus || s.purMenuId != null ||
+      s.purSuggestOpen || s.shopFamilyOpen || s.purFamilyOpen) return true;
+  // 没进「编辑态」但正聚焦的输入框也要算：采购记录的名称框、清单搜索框等
+  const ae = document.activeElement;
+  const c = $("#content");
+  if (ae && c && c.contains(ae) && /^(INPUT|SELECT|TEXTAREA)$/.test(ae.tagName)) return true;
+  return false;
+}
+
+function pollingAllowed() {
+  if (!state.token) return false;
+  if ($("#appView").classList.contains("hidden")) return false;
+  if (document.visibilityState !== "visible") return false;
+  // 首屏 / 无缓存页签的整页取数还在飞时别轮询，否则两组请求打同一批接口
+  if (!state.tabReady[state.tab]) return false;
+  if (openModal) return false;      // 管理密码 / 确认删除等弹窗开着
+  if (INFLIGHT.size) return false;  // 有写请求在途，别在提交过程中重画
+  if (isEditingNow()) return false;
+  if (Date.now() - lastActivity > POLL_IDLE_MS) return false; // 发呆太久就停，省额度
+  return true;
+}
+
+function startPolling() {
+  if (pollTimer) return;
+  if ($("#appView").classList.contains("hidden")) return;
   if (document.visibilityState !== "visible") return;
+  markActivity(); // 刚进入 / 刚切回来，重新起算活跃窗口
+  pollTimer = setInterval(async () => {
+    if (!pollingAllowed()) return;
+    try {
+      const changed = await pollVersion();
+      // 探针期间用户可能切了页签或开始输入，再确认一次门槛
+      if (!changed || !pollingAllowed()) return;
+      revalidate(state.tab, { poll: true }).catch(() => {});
+    } catch {
+      // 探针失败静默：保留游标与缓存，下一轮再试；不弹 toast 免得变成定时骚扰
+    }
+  }, POLL_MS);
+}
+
+function stopPolling() {
+  if (!pollTimer) return;
+  clearInterval(pollTimer);
+  pollTimer = 0;
+}
+
+// 从别的标签页 / 后台切回时：恢复探针并立刻补一次刷新，不必等下一个 30 秒
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") {
+    stopPolling(); // 后台连定时器都不跑，省电也省请求
+    return;
+  }
   if (!state.token || $("#appView").classList.contains("hidden")) return;
-  revalidate(state.tab);
+  markActivity();
+  startPolling();
+  if (pollingAllowed()) revalidate(state.tab);
 });
 
 // ---------- 表单状态快照 ----------
@@ -1181,37 +1366,103 @@ function clearFields(...ids) {
   });
 }
 
+// ---------- 加载反馈：骨架屏 / 失败重试 ----------
+// 整页取数期间先给 #content 一个即时反馈，避免「侧栏高亮切了、内容区毫无动静」。
+// aria-busy 让读屏也知道内容还在加载；paintTab 与错误卡片负责清掉它。
+function showSkeleton() {
+  const c = $("#content");
+  if (!c) return;
+  c.setAttribute("aria-busy", "true");
+  c.innerHTML = `<div class="loading-skeleton" role="status" aria-live="polite">
+      <p class="hint sk-hint">正在加载…</p>
+      <div class="sk-cards"><span class="sk sk-card"></span><span class="sk sk-card"></span><span class="sk sk-card"></span><span class="sk sk-card"></span></div>
+      <div class="sk-section"><span class="sk sk-line w60"></span><span class="sk sk-line"></span><span class="sk sk-line w80"></span><span class="sk sk-line w40"></span></div>
+    </div>`;
+}
+
+function showLoadError(msg) {
+  const c = $("#content");
+  if (!c) return;
+  c.removeAttribute("aria-busy");
+  // data-readonly-keep：项目已结束只是不能改数据，「重试」这种纯加载辅助按钮仍要能点
+  c.innerHTML = `<div class="empty load-error"><p>${esc(msg)}</p><button type="button" class="ghost" data-action="retry-load" data-readonly-keep>重试</button></div>`;
+}
+
+// 整页渲染的「代次」：切页签 / 重开渲染时递增并 abort 上一轮请求。
+// 旧请求返回后一律丢弃，不再抢占带宽，也不会把旧页内容画回来。
+// 两套取消信号分开管：
+//   loadCtrl —— 首屏 / 无缓存切页签的整页取数，每切一次页签作废一轮；
+//   bgCtrl   —— 后台刷新与页签预热共用，只在换项目 / 退出登录时整体作废。
+// 切页签不该掐掉「别的页签还没预热完」的请求，否则预热等于白做。
+let renderSeq = 0;
+let loadCtrl = null;
+let bgCtrl = null;
+
+function bgSignal() {
+  if (!bgCtrl || bgCtrl.signal.aborted) bgCtrl = new AbortController();
+  return bgCtrl.signal;
+}
+
+function abortLoads() {
+  renderSeq++;
+  if (loadCtrl) {
+    loadCtrl.abort();
+    loadCtrl = null;
+  }
+}
+
+function abortAllLoads() {
+  abortLoads();
+  if (bgCtrl) {
+    bgCtrl.abort();
+    bgCtrl = null;
+  }
+}
+
 async function render() {
   // 页面重建是异步的（各页先拉接口、之后再整体赋值 #content）。轮询触发的重建与用户切页签可能交错：
   // 旧页签的重建会在稍后把内容盖回旧页签，于是出现「页签高亮在新页、内容还是旧页」的错位。
-  // 这里在每轮重建结束后核对页签是否被改过：改过就丢弃这一轮、按当前页签重画（最多 3 轮，防止打转）。
-  for (let i = 0; i < 3; i++) {
-    const tab = state.tab;
-    const fn = FETCHERS[tab];
-    if (!fn) return;
-    try {
-      await fn();
-      state.tabReady[tab] = true;
-      state.tabAt[tab] = Date.now();
-    } catch (e) {
+  // 现在用代次 + AbortController 直接作废上一轮，再保留最多 3 轮兜底，防止打转。
+  const seq = ++renderSeq;
+  if (loadCtrl) loadCtrl.abort();
+  const ctrl = new AbortController();
+  loadCtrl = ctrl;
+  try {
+    for (let i = 0; i < 3; i++) {
+      if (seq !== renderSeq) return; // 已有更新的渲染，本轮作废
+      const tab = state.tab;
+      const fn = FETCHERS[tab];
+      if (!fn) return;
+      try {
+        await fn(ctrl.signal);
+        if (seq !== renderSeq) return;
+        state.tabReady[tab] = true;
+        state.tabAt[tab] = Date.now();
+      } catch (e) {
+        if (seq !== renderSeq || (e && e.name === "AbortError")) return; // 主动取消不算错误
+        if (state.tab === tab) {
+          showLoadError(e.message || "加载失败");
+          return;
+        }
+        continue;
+      }
       if (state.tab === tab) {
-        $("#content").innerHTML = `<div class="empty">${esc(e.message)}</div>`;
+        // 取数完成之后再快照：否则「请求开始前」拍下的空值会在请求返回后把
+        // 用户这期间刚选好的内容（例如采购记录里的物品名称）覆盖掉。
+        // 这里拍的是「取数后、重画前」的最新值，重画后原样填回。
+        const snap = snapshotForm();
+        if (paintTab(tab)) restoreForm(snap);
+        else showLoadError("页面绘制失败，请重试"); // 别把骨架屏永远留在屏幕上
+        applyReadonly();
         return;
       }
-      continue;
     }
-    if (state.tab === tab) {
-      // 取数完成之后再快照：否则「请求开始前」拍下的空值会在请求返回后把
-      // 用户这期间刚选好的内容（例如采购记录里的物品名称）覆盖掉。
-      // 这里拍的是「取数后、重画前」的最新值，重画后原样填回。
-      const snap = snapshotForm();
-      if (paintTab(tab)) restoreForm(snap);
-      applyReadonly();
-      return;
-    }
+    // 三轮里页签都在变、没能画出来：至少用缓存把当前页签补画一次，别让内容区空着
+    if (FETCHERS[state.tab] && !$("#content").firstChild) paintTab(state.tab);
+  } finally {
+    // 本轮仍是当前渲染才清掉引用；若已被 abortLoads() 换掉，别误伤新的一轮
+    if (loadCtrl === ctrl) loadCtrl = null;
   }
-  // 三轮里页签都在变、没能画出来：至少用缓存把当前页签补画一次，别让内容区空着
-  if (FETCHERS[state.tab] && !$("#content").firstChild) paintTab(state.tab);
 }
 
 // 用缓存把某个页签先画出来（切页签时先画缓存、网络回来再后台刷新）；没有缓存返回 false，交给整页渲染兜底
@@ -1223,7 +1474,10 @@ function paintTab(tab) {
   if (!paint) return false;
   const keepSuggest = captureSuggestOpen(); // 用户正开着名称候选框时，重画不该把它关掉
   const c = $("#content");
-  if (c) c.classList.add("no-tr");
+  if (c) {
+    c.classList.add("no-tr");
+    c.removeAttribute("aria-busy");
+  }
   try {
     paint();
     applyReadonly();
@@ -1244,45 +1498,71 @@ function paintTab(tab) {
   }
 }
 
-// 后台刷新某个页签：拿到新数据后只在用户仍停在该页签时重画；失败就继续用缓存，不打扰用户
-async function revalidate(tab) {
+// 后台刷新某个页签：拿到新数据后只在用户仍停在该页签时重画；失败继续用缓存。
+// poll=true 用于「版本探针发现变化 / 后台自动刷新」这类非用户主动的取数：
+// 失败静默、数据没变化时不重画，避免频繁打扰；主动刷新（切页签 / 切回前台 / 点刷新）不传。
+let lastLoadErrToast = 0;
+async function revalidate(tab, { poll = false } = {}) {
   if (!FETCHERS[tab]) return;
   if (state.revalidating[tab]) return; // 同一页签已在刷新，别叠加请求
   if (state.tabAt[tab] && Date.now() - state.tabAt[tab] < REVALIDATE_MS) return; // 刚刷新过，短时间内不再重复请求
   state.revalidating[tab] = true;
+  const signal = bgSignal();
+  const before = poll ? dataFingerprint() : null;
   try {
-    await FETCHERS[tab]();
+    await FETCHERS[tab](signal);
+    if (signal.aborted) return; // 期间换了项目 / 退出：旧数据不要再写回 state
     state.tabReady[tab] = true;
     state.tabAt[tab] = Date.now();
     if (state.tab === tab) {
+      // 轮询且数据一字未变就别整页重建：不然每 10 秒打断一次阅读、hover 和卡片动画。
+      if (before !== null && dataFingerprint() === before) return;
       // 快照放到取数之后：保留用户在这次后台刷新期间刚选好的内容，
       // 避免用「请求开始前」的旧快照把它盖掉。
       const snap = snapshotForm();
       if (paintTab(tab)) restoreForm(snap);
     }
-  } catch {
-    // 后台刷新失败：保持已画出的缓存内容
+  } catch (e) {
+    // 保留已画出的缓存内容。主动刷新（切页签 / 切回前台）给一次轻提示，
+    // 别让用户把「刷新失败」当成「卡住不动」；轮询失败则静默，10 秒一次会变成骚扰。
+    // 8 秒内只提示一次，避免切页签时连续弹 toast。
+    if (!poll && e && e.name !== "AbortError" && Date.now() - lastLoadErrToast > 8000) {
+      lastLoadErrToast = Date.now();
+      toast("数据刷新失败，当前显示的是缓存内容");
+    }
   } finally {
     state.revalidating[tab] = false;
   }
 }
 
-// 进入项目后预热其余页签：第一次切到任意页签也能先画缓存、立刻响应，再后台刷新
+// 进入项目后预热其余页签：第一次切到任意页签也能先画缓存、立刻响应，再后台刷新。
+// 原来是 for + await 串行，慢网络下最后一个页签要等前面全部 RTT 才有缓存；
+// 现在改成 3 路并发，并按「当前页签 → 概览 → 其余」排序，常用的先 ready。
 let prefetching = false;
 async function prefetchRest() {
   if (prefetching) return;
   prefetching = true;
+  const signal = bgSignal();
   try {
-    for (const t of TABS.map((x) => x.key)) {
-      if (state.tabReady[t] || !FETCHERS[t]) continue;
-      if ($("#appView").classList.contains("hidden")) return; // 已离开主界面就不预热
-      try {
-        await FETCHERS[t]();
-        state.tabReady[t] = true;
-        // 不写 state.tabAt[t]：让用户切到该页签时的 revalidate 正常跑一次，
-        // 避免「进入项目后 1 秒内切过去就不刷新」。
-      } catch {}
-    }
+    const order = [state.tab, "overview", ...TABS.map((x) => x.key).filter((k) => k !== state.tab && k !== "overview")];
+    const queue = order.filter((t) => !state.tabReady[t] && FETCHERS[t]);
+    let cursor = 0;
+    const worker = async () => {
+      while (cursor < queue.length) {
+        // 换项目 / 退出登录时 bgCtrl 被整体作废：立刻收工，别把旧项目数据写进新项目的缓存
+        if (signal.aborted) return;
+        const t = queue[cursor++];
+        if ($("#appView").classList.contains("hidden")) return; // 已离开主界面就不预热
+        try {
+          await FETCHERS[t](signal);
+          if (signal.aborted) return;
+          state.tabReady[t] = true;
+          // 不写 state.tabAt[t]：让用户切到该页签时的 revalidate 正常跑一次，
+          // 避免「进入项目后 1 秒内切过去就不刷新」。
+        } catch {}
+      }
+    };
+    await Promise.all([worker(), worker(), worker()]); // 限 3 路并发，别一次打满后端
   } finally {
     prefetching = false;
   }
@@ -1312,20 +1592,6 @@ function applyReadonly() {
       '<svg class="banner-ico" aria-hidden="true" focusable="false"><use href="#icon-lock"></use></svg>' +
       '<span class="banner-text">项目已结束<span class="banner-dot">·</span>当前为查看模式，内容不可修改</span>';
     c.prepend(b);
-  }
-}
-
-function updateBadge() {
-  const tab = $("#tabs").querySelector('[data-tab="logs"]');
-  if (!tab) return;
-  const old = tab.querySelector(".badge");
-  if (old) old.remove();
-  if (state.newLogs) {
-    const span = document.createElement("span");
-    span.className = "badge";
-    span.textContent = state.newLogs;
-    span.setAttribute("aria-label", state.newLogs + " 条新日志");
-    tab.appendChild(span);
   }
 }
 
@@ -1485,18 +1751,17 @@ function renderBonusPanel({ focusInput = false } = {}) {
 }
 
 // ---------- 概览 ----------
-async function fetchOverview() {
+async function fetchOverview(signal) {
   // 概览要用的四个接口互不依赖，并发拉取，别让网络延迟叠成四倍
   const [o, st, logs, shop] = await Promise.all([
-    api("/overview"),
-    api("/settlement"),
-    api("/logs?since=0"), // 日志页与顶栏角标仍要这份增量游标，概览自己不再展示
-    api("/shopping-items"), // 任务接单图表按「哪家接了、买到没有」统计
+    api("/overview", { signal }),
+    api("/settlement", { signal }),
+    api("/logs?since=0", { signal }), // 日志页要完整列表，这里拉全量；概览自己不展示日志
+    api("/shopping-items", { signal }), // 任务接单图表按「哪家接了、买到没有」统计
   ]);
   state.overview = o.data; // 缓存一份，供「修改预算 / 取消」局部重画时取用
   state.settlement = st.data || {}; // 后端返回 data: null 时给个空对象，paintOverview 里不解构就不会炸
   state.logsList = logs.data || [];
-  state.lastLogId = state.logsList.length ? state.logsList[state.logsList.length - 1].id : 0;
   // 与采购清单页共用一份数据：两个缓存一起更新，切页签时接单状态立刻可见（同 claimShopping 里的约定）
   state.shoppingList = shop.data || [];
   state.shopItems = state.shoppingList;
@@ -1510,7 +1775,7 @@ function paintOverview() {
     <div class="cards">
       <div class="card"><div class="num">${money(o.total_amount)}</div><div class="lbl">总花费</div></div>
       <div class="card"><div class="num">${hasBudget ? money(o.budget) : "无"}</div><div class="lbl">项目预算</div></div>
-      <div class="card"><div class="num">${st.family_count ? money(st.share) : "—"}</div><div class="lbl">${st.split_mode === "person" ? `人均应摊（${Number(st.person_count) || 0} 人）` : `每家应摊（${st.family_count} 家均分）`}</div></div>
+      ${shareCardHtml(st)}
       <div class="card"><div class="num">${o.family_count}</div><div class="lbl">家庭数</div></div>
       <div class="card"><div class="num">${o.member_count}</div><div class="lbl">总人数</div></div>
       <div class="card"><div class="num">${o.carry_done}/${o.carry_total}</div><div class="lbl">携带已带</div></div>
@@ -1626,9 +1891,9 @@ function paintCurrentTab() {
   }
 }
 
-async function fetchMembers() {
+async function fetchMembers(signal) {
   // 人数与备注都挂在家庭上，成员页直接读 state.families；这里只需确保家庭列表是最新的。
-  await loadFamilies();
+  await loadFamilies(signal);
 }
 
 // 只重画成员页内容（用 state.families 缓存），供纯前端切换调用。
@@ -1690,8 +1955,8 @@ function paintMembers() {
 }
 
 // ---------- 携带物品 ----------
-async function fetchCarry() {
-  state.carryItems = (await api("/carry-items")).data || [];
+async function fetchCarry(signal) {
+  state.carryItems = (await api("/carry-items", { signal })).data || [];
 }
 
 // 携带物品单行：只放开「数量」编辑，名称是添加时定的标识、不提供改名；
@@ -1781,8 +2046,8 @@ return `<div class="section${isMine ? "" : " readonly"}">
 }
 
 // ---------- 采购清单 ----------
-async function fetchShopping() {
-  state.shoppingList = (await api("/shopping-items")).data || [];
+async function fetchShopping(signal) {
+  state.shoppingList = (await api("/shopping-items", { signal })).data || [];
 }
 
 // ---------- 采购清单筛选 ----------
@@ -1991,7 +2256,7 @@ function shopRowHtml(i) {
         i.status === "已购"
           ? // 已经登记过采购记录的项不能删：删除控件保持占用但不可用，原因写进 title / aria-label，
             // 页面下方的规则说明里也写清「删掉采购记录即可恢复可删除」。删掉记录后 status 回「待购」，删除自动恢复可用。
-            `<button class="link" data-action="del-shop" data-id="${i.id}" disabled aria-disabled="true" title="这一项已经登记过采购记录，不能删除；删掉对应的采购记录后它会回到「未接单 + 待购」，那时才能删" aria-label="删除不可用：这一项已经登记过采购记录，删掉对应的采购记录后即可删除">删除</button>`
+            `<button class="link danger del-off" data-action="del-shop" data-id="${i.id}" disabled aria-disabled="true" title="这一项已经登记过采购记录，不能删除；删掉对应的采购记录后它会回到「未接单 + 待购」，那时才能删" aria-label="删除不可用：这一项已经登记过采购记录，删掉对应的采购记录后即可删除">删除</button>`
           : dangerCell("shopping", i.id, "del-shop")
       }${claimAction(i)}
     </div>
@@ -2132,7 +2397,7 @@ function setSuggestOpen(open, animate = true) {
               `</li>`
           )
           .join("")
-      : `<li class="combo-empty" role="presentation">${state.familyId ? "当前没有可登记的项目：先到「采购清单」接任务；已经登记过采购的项不会再出现在这里" : "请先选择你所属的家庭"}</li>`;
+      : `<li class="combo-empty" role="presentation">${state.familyId ? "当前没有可登记项" : "请先选择你所属家庭"}</li>`;
   } else {
     state.purActive = -1;
     input.removeAttribute("aria-activedescendant");
@@ -2287,9 +2552,9 @@ $("#content").addEventListener("keydown", (e) => {
 });
 
 // ---------- 采购记录 ----------
-async function fetchPurchases() {
+async function fetchPurchases(signal) {
   // 三个接口互不依赖，并发拉取
-  const [p, s, o] = await Promise.all([api("/purchases"), api("/shopping-items"), api("/overview")]);
+  const [p, s, o] = await Promise.all([api("/purchases", { signal }), api("/shopping-items", { signal }), api("/overview", { signal })]);
   state.purchases = p.data || [];
   state.shopItems = s.data || [];
   state.overview = o.data || {};
@@ -2666,8 +2931,8 @@ function applyPurchaseAdded(rec) {
 }
 
 // ---------- 结算 ----------
-async function fetchSettlement() {
-  state.settlement = (await api("/settlement")).data || {};
+async function fetchSettlement(signal) {
+  state.settlement = (await api("/settlement", { signal })).data || {};
 }
 
 function paintSettlement() {
@@ -2679,13 +2944,12 @@ function paintSettlement() {
   // 只要项目设置了任务奖金池（含尚未生效的情况），「每家结算」就补一列「任务奖金」（= 该家获得的奖金）。
   // 放在「应摊」之后，让「已垫付 + 任务奖金 − 应摊 = 差额」这条算式在同一行里直接可读。
   const showBonusCol = bonus > 0;
-  // 分摊方式：project.split_mode 决定，按人数口径时表格补一列人数、顶部 KPI 改「人均应摊」。
-  // person_fallback = 项目选了按人数但所有家庭都是 0 人，此时后端临时退回家数均分。
+  // 分摊方式：project.split_mode 决定，按人数口径时表格补一列人数。
+  // person_fallback = 项目选了按人数但所有家庭都是 0 人，此时后端临时退回按家庭数均分。
+  // 顶部「每家应摊」卡片由 shareCardHtml 统一生成（概览页共用），口径以 effective_mode 为准，
+  // 不再用 split_mode 判断，避免 0 人兜底时把「每家」金额标成「人均」。
   const byPerson = s.split_mode === "person";
   const showPeopleCol = byPerson;
-  const shareLabel = byPerson
-    ? `人均应摊（共 ${Number(s.person_count) || 0} 人${bonusActive ? "，含奖金池" : ""}）`
-    : `每家应摊（${s.family_count} 家均分${bonusActive ? "，含奖金池" : ""}）`;
   const modeSwitch = `<div class="split-switch" role="group" aria-label="结算分摊方式">
       <span class="split-switch-label">分摊方式</span>
       <div class="split-switch-seg">
@@ -2701,40 +2965,8 @@ function paintSettlement() {
     ${modeSwitch}
 <div class="cards">
       <div class="card"><div class="num">${money(s.total)}</div><div class="lbl">总花费</div></div>
-      <div class="card"><div class="num">${money(s.share)}</div><div class="lbl">${shareLabel}</div></div>
       ${bonus > 0 ? `<div class="card"><div class="num">${money(bonus)}</div><div class="lbl">任务奖金池${bonusActive ? `（已完成 ${s.bonus_total_done} 项）` : "（未生效）"}</div></div>` : ""}
-    </div>
-    <div class="section">
-      <div class="section-head"><span class="title">每家结算</span><span class="hint">分摊口径：${esc(s.basis || "按家庭数均分")}</span></div>
-      <table class="settle-table">
-        <thead><tr><th>家庭</th>${showPeopleCol ? '<th class="r">人数</th>' : ""}<th class="r">已垫付</th><th class="r">应摊</th>${showBonusCol ? '<th class="r">任务奖金</th>' : ""}<th class="r">差额</th></tr></thead>
-        <tbody>
-          ${detail
-            .map(
-              (d) => `<tr>
-                <td>${esc(d.name)}</td>
-                ${showPeopleCol ? `<td class="r">${Number(d.member_count) || 0} 人</td>` : ""}
-                <td class="r">${money(d.paid)}</td>
-                <td class="r">${money(d.share)}</td>
-                ${showBonusCol ? `<td class="r">${money(d.bonus_out)}</td>` : ""}
-                <td class="r ${d.balance > 0 ? "pos" : d.balance < 0 ? "neg" : ""}">${signedMoney(d.balance)}</td>
-              </tr>`
-            )
-            .join("")}
-        </tbody>
-      </table>
-      <p class="hint" style="margin-top:10px">差额为正 = 该家庭多垫付、应收回；为负 = 应补付。${
-        byPerson
-          ? "按人数均分：总花费按各家庭人数加权，人数为 0 的家庭应摊 0。"
-          : ""
-      }${
-        bonusActive
-          ? `差额 = 已垫付 + 任务奖金 − 应摊；应摊已含奖金池出资（每家 ${money(s.bonus_contribution)}）。`
-          : bonus > 0
-            ? "奖金池尚未生效（还没有已完成的采购任务），「任务奖金」列暂按 0 计。"
-            : ""
-      }</p>
-      ${s.person_fallback ? '<p class="hint split-fallback">当前项目还没有登记任何人数，已临时按家庭数均分；到「成员」页补上人数后会自动按人数计算。</p>' : ""}
+      ${shareCardHtml(s)}
     </div>
     ${
       bonus > 0
@@ -2765,10 +2997,35 @@ function paintSettlement() {
             .join("")}
         </tbody>
       </table>
-      <p class="hint" style="margin-top:10px">净收益 = 获得奖金 − 出资；出资计入上面的「应摊」。</p>
     </div>`
         : ""
     }
+    <div class="section">
+      <div class="section-head"><span class="title">每家结算</span><span class="hint">分摊口径：${esc(s.basis || "按家庭数均分")}</span></div>
+      <table class="settle-table">
+        <thead><tr><th>家庭</th>${showPeopleCol ? '<th class="r">人数</th>' : ""}<th class="r">已垫付</th><th class="r">应摊</th>${showBonusCol ? '<th class="r">任务奖金</th>' : ""}<th class="r">差额</th></tr></thead>
+        <tbody>
+          ${detail
+            .map(
+              (d) => `<tr>
+                <td>${esc(d.name)}</td>
+                ${showPeopleCol ? `<td class="r">${Number(d.member_count) || 0} 人</td>` : ""}
+                <td class="r">${money(d.paid)}</td>
+                <td class="r">${money(d.share)}</td>
+                ${showBonusCol ? `<td class="r">${money(d.bonus_out)}</td>` : ""}
+                <td class="r ${d.balance > 0 ? "pos" : d.balance < 0 ? "neg" : ""}">${signedMoney(d.balance)}</td>
+              </tr>`
+            )
+            .join("")}
+        </tbody>
+      </table>
+      <p class="hint" style="margin-top:10px">${
+        byPerson
+          ? `每家应摊=总花费/总人数*家庭人数 ${bonusActive ? "+ 任务奖金/家庭数" : ""}`
+          : `${bonusActive ? "每家应摊=(总花费+任务奖金)/家庭数" : "每家应摊=总花费/家庭数"}`
+      }。</p>
+      ${s.person_fallback ? '<p class="hint split-fallback">当前项目还没有登记任何人数，已临时按家庭数均分。</p>' : ""}
+    </div>
     <div class="section">
       <div class="section-head"><span class="title">结算建议</span></div>
       ${transfers.length
@@ -2780,15 +3037,12 @@ function paintSettlement() {
 }
 
 // ---------- 日志 ----------
-async function fetchLogs() {
-  state.logsList = (await api("/logs?since=0")).data || [];
-  state.lastLogId = state.logsList.length ? state.logsList[state.logsList.length - 1].id : 0;
+async function fetchLogs(signal) {
+  state.logsList = (await api("/logs?since=0", { signal })).data || [];
 }
 
 function paintLogs() {
   const logs = state.logsList || [];
-  state.newLogs = 0;
-  updateBadge();
   const canDel = !isReadonly();
   $("#content").innerHTML = logs.length
     ? `<div class="section-head" style="margin-bottom:6px">
@@ -2934,6 +3188,14 @@ $("#content").addEventListener("click", async (e) => {
   }
   if (btn.dataset.busy === "1") return; // 正在处理中，忽略重复点击
   const { action, id, fid, status, kind } = btn.dataset;
+  // 加载失败后的「重试」：立刻换回骨架屏，再走一遍当前页签的整页渲染。
+  // render() 自己会递增代次并作废上一轮请求，连点也不会叠加出多份取数。
+  // 放在 try 外面：按钮随即被 innerHTML 替换掉，不该再落到末尾 finally 的 setBusy(btn, false)。
+  if (action === "retry-load") {
+    showSkeleton();
+    render();
+    return;
+  }
   const busyLabel = BUSY_ACTIONS[action];
   if (busyLabel) setBusy(btn, true, busyLabel);
   try {
@@ -2999,8 +3261,6 @@ $("#content").addEventListener("click", async (e) => {
         await api("/logs", { method: "DELETE", adminPw: pw });
       });
       if (!ok) return; // 同上：取消不重渲染
-      state.lastLogId = 0;
-      state.newLogs = 0;
       toast("全部日志已清除");
     } else if (action === "settle-mode") {
       // 项目级口径，写库 + 管理员密码；成功后落到末尾的 await render() 统一重新取数重画。
@@ -3427,14 +3687,54 @@ $("#newProjModal").addEventListener("click", (e) => {
 });
 $("#logoutBtn2").addEventListener("click", logout);
 $("#backHomeBtn").addEventListener("click", showHome);
-$("#homeBtn").addEventListener("click", showHome);
-// 汉堡菜单（原「退出」按钮位置）：点开下拉，里面列全部家庭（点即切换）+ 退出
+// 「项目中心」入口已挪进右上角汉堡菜单（#topMenu 里的 data-action="go-home"），
+// 顶栏不再单独占一个按钮；选择家庭页的「返回项目中心」仍直接调 showHome。
+// 手动刷新：绕开 1 秒防抖立刻重取当前页签，顺手把版本游标推进到最新，
+// 免得紧接着的探针又拿同一批变化触发一次重复拉取。按钮只在点击时发请求，零空闲开销。
+// 动画：点下就加 .is-refreshing（图标转圈 + 品牌色高亮），转满至少一圈再收，
+// 结束时放一圈扩散光环（.is-done）。网络再快也不会「闪一下就没了」。
+const REFRESH_SPIN_MS = 600; // 与 style.css 里 #refreshBtn.is-refreshing .ico 的 spin 周期一致
+let refreshDoneTimer = 0;
+$("#refreshBtn").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  if (btn.disabled) return;
+  clearTimeout(refreshDoneTimer);
+  btn.classList.remove("is-done");
+  btn.disabled = true;
+  btn.classList.add("is-refreshing");
+  btn.setAttribute("aria-busy", "true");
+  markActivity();
+  const started = Date.now();
+  try {
+    state.tabAt[state.tab] = 0;
+    await revalidate(state.tab);
+    await pollVersion().catch(() => {});
+  } finally {
+    // 至少转满一圈：请求比一圈还快时补一点时间，避免图标刚启动就被掐掉
+    const rest = Math.max(0, REFRESH_SPIN_MS - (Date.now() - started));
+    if (rest) await new Promise((r) => setTimeout(r, rest));
+    btn.classList.remove("is-refreshing");
+    btn.removeAttribute("aria-busy");
+    btn.disabled = false;
+    // 光环只表示「这次刷新动作结束了」，不暗示成功；失败另有 toast 提示
+    btn.classList.add("is-done");
+    refreshDoneTimer = setTimeout(() => btn.classList.remove("is-done"), 620);
+  }
+});
+// 收起下拉并同步汉堡按钮的可访问状态。菜单里所有「点了就离开当前界面」的分支都要走它：
+// 否则 #appView 被隐藏后 aria-expanded 仍停在 true，下次进项目会看到状态不一致。
+function closeTopMenu() {
+  $("#topMenu").classList.add("hidden");
+  $("#topMenuBtn").setAttribute("aria-expanded", "false");
+}
+
+// 汉堡菜单：切换家庭（展开子菜单）、项目中心、退出。项目中心原先是顶栏独立按钮，
+// 现在收进菜单、放在「退出」上面，顶栏少一个按钮，窄屏也不挤。
 $("#topMenuBtn").addEventListener("click", (e) => {
   e.stopPropagation();
   const menu = $("#topMenu");
   if (!menu.classList.contains("hidden")) {
-    menu.classList.add("hidden");
-    $("#topMenuBtn").setAttribute("aria-expanded", "false");
+    closeTopMenu();
     return;
   }
   // 直接用已缓存的家庭列表（state.families）展开，不再为打开下拉重新请求一次
@@ -3448,7 +3748,7 @@ $("#topMenuBtn").addEventListener("click", (e) => {
   if (swBtn0) swBtn0.setAttribute("aria-expanded", "false");
 });
 
-// 点菜单里的「家庭」即切换（只改本机记录的操作家庭，不写库）；点「退出」走 logout
+// 菜单内的点击委托：切换家庭 / 项目中心 / 退出
 $("#topMenu").addEventListener("click", (e) => {
   // 点「切换家庭」：展开 / 收起家庭名单子菜单（不关闭整个下拉）
   const sw = e.target.closest("[data-action='switch-family']");
@@ -3463,16 +3763,21 @@ $("#topMenu").addEventListener("click", (e) => {
   if (fam) {
     state.familyId = Number(fam.dataset.id);
     localStorage.setItem(familyKey(state.projectId), String(state.familyId));
-    $("#topMenu").classList.add("hidden");
-    $("#topMenuBtn").setAttribute("aria-expanded", "false");
+    closeTopMenu();
     showApp(); // 重建界面：当前家庭标识与各页数据随之更新
     toast("已切换到 " + familyName(state.familyId));
     return;
   }
+  // 「项目中心」：和原来顶栏那个按钮完全一样回到项目列表，先收起菜单再切视图
+  const home = e.target.closest("[data-action='go-home']");
+  if (home) {
+    closeTopMenu();
+    showHome();
+    return;
+  }
   const out = e.target.closest("[data-action='logout']");
   if (out) {
-    $("#topMenu").classList.add("hidden");
-    $("#topMenuBtn").setAttribute("aria-expanded", "false");
+    closeTopMenu();
     logout();
   }
 });
@@ -3482,8 +3787,7 @@ document.addEventListener("click", (e) => {
   const menu = $("#topMenu");
   if (!menu || menu.classList.contains("hidden")) return;
   if (e.target.closest("#topMenu") || e.target.closest("#topMenuBtn")) return;
-  menu.classList.add("hidden");
-  $("#topMenuBtn").setAttribute("aria-expanded", "false");
+  closeTopMenu();
 });
 
 // 管理权限密码弹窗

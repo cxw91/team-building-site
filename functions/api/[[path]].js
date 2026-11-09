@@ -1298,7 +1298,9 @@ async function computeSettlement(env, projectId) {
   return {
     total: round2(totalCents / 100),
     family_count: count,
-    // 顶部 KPI：按家庭数时是「每家应摊」，按人数时是「人均应摊」；有生效的奖金时把池子也算进来
+    // 兼容字段：按 divisor（实际生效口径的人数或家庭数）算出的平均值，含生效的奖金池。
+    // 按人数口径时这里是「人均」而不是「每家应摊」；前端已改为用 detail 里各家的实际应摊
+    // 展示「每家应摊 / 每家应摊区间」，请勿再把这个值直接当作「每家应摊」使用。
     share: divisor ? round2((totalCents + (bonusActive ? bonusCents : 0)) / divisor / 100) : 0,
     split_mode: requestedMode,        // 项目设置的分摊方式
     effective_mode: byPerson ? "person" : "family", // 本次实际生效的口径（0 人兜底时不同）
@@ -1366,9 +1368,12 @@ async function handleLogs(env, request, projectId) {
   const url = new URL(request.url);
   const since = parseInt(url.searchParams.get("since") || "0", 10) || 0;
   const limit = Math.min(parseInt(url.searchParams.get("limit") || "200", 10) || 200, 500);
+  // 倒序取最新的 limit 条，再反转成时间正序返回。
+  // 原来 ORDER BY id ASC LIMIT N 在日志超过 N 条后永远只返回最早那批，新日志再也拉不到；
+  // 前端是全量拉取（since=0），轮询刷得再勤也看不到新增记录。倒序保证新日志一定在结果里。
   const rows = await env.DB
-    .prepare("SELECT * FROM logs WHERE project_id = ? AND id > ? ORDER BY id ASC LIMIT ?")
+    .prepare("SELECT * FROM logs WHERE project_id = ? AND id > ? ORDER BY id DESC LIMIT ?")
     .bind(projectId, since, limit)
     .all();
-  return json({ ok: true, data: rows.results });
+  return json({ ok: true, data: (rows.results || []).slice().reverse() });
 }
