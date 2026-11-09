@@ -46,6 +46,15 @@ function parseMemberCount(v) {
   if (!Number.isInteger(n) || n < 0 || n > 999) return null;
   return n;
 }
+// 金额：只允许非负有限数字（前端传 number，也兼容数字字符串）。空串 / null / NaN /
+// 负数 / 布尔 / 对象一律判非法；上界 1e9 是因为结算会乘 100 转成「分」，超大值会溢出。
+// 返回 null 表示非法，由调用方回 400。登记采购与改金额共用，避免一处校验一处不校验。
+function parseAmount(v) {
+  if (typeof v !== "number" && typeof v !== "string") return null;
+  if (String(v).trim() === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) && n >= 0 && n <= 1e9 ? n : null;
+}
 const SPLIT_LABEL = { family: "按家庭数均分", person: "按人数均分" };
 
 // ---------- 鉴权与上下文 ----------
@@ -118,10 +127,15 @@ function requireProjectAdmin(request, me) {
 // ---------- 家庭自助约束 ----------
 // 家庭 / 成员 的写操作只能由「该家庭自己」发起：请求头里的 X-Family-Id 必须与目标家庭一致。
 // 返回 null 表示校验通过；返回 Response 表示应直接把它作为结果返回。
-function requireOwnFamily(request, familyId) {
+// message 可选：让携带物品 / 接单等场景沿用各自的提示文案。
+// 注意这里必须是「必须有身份头 + 必须相等」，绝不能写成 myFamily && ...：
+// 不带头时 myFamily 为 null，条件会被整段跳过，等于任何登录用户都能改别家的记录。
+function requireOwnFamily(request, familyId, message) {
   const myFamily = actorFamilyId(request);
   if (!myFamily) return err("请先选择你所属的家庭", 403);
-  if (Number(myFamily) !== Number(familyId)) return err("只能管理自己家庭的信息，其他家庭只能查看", 403);
+  if (Number(myFamily) !== Number(familyId)) {
+    return err(message || "只能管理自己家庭的信息，其他家庭只能查看", 403);
+  }
   return null;
 }
 
@@ -307,7 +321,7 @@ export async function onRequest(context) {
 
     // 口令管理：登录页也要能用，因此只认超级密码（SUPER_PASSCODE），不要求登录令牌
     if (route === "passcodes") {
-      return handlePasscodes(env, method, id, request);
+      return await handlePasscodes(env, method, id, request);
     }
 
     // 以下接口均需登录；登录身份就是「哪个口令」
@@ -316,7 +330,7 @@ export async function onRequest(context) {
 
     // 项目本身的管理（列表 / 新建 / 详情 / 改名 / 结束 / 删除）不需要项目上下文
     if (route === "projects") {
-      return handleProjects(env, method, id, request, me);
+      return await handleProjects(env, method, id, request, me);
     }
 
     // 其余业务接口都需要项目上下文，且项目必须真实存在、且属于当前登录口令
@@ -333,20 +347,22 @@ export async function onRequest(context) {
       return err("项目已结束，只能查看；如需修改请先用本口令的管理员密码重启项目", 403);
     }
 
+    // 每个 handler 都返回 Promise，必须 return await：异常才会落到下面的 catch。
+    // 只写 return handleXxx(...) 时 rejection 会绕过 try/catch，线上变成非 JSON 的通用 500。
     switch (route) {
       case "page-data":
         if (method !== "GET") return err("不支持的方法", 405);
-        return handlePageData(env, request, projectId, proj);
+        return await handlePageData(env, request, projectId, proj);
       case "families":
-        return handleFamilies(env, method, id, request, projectId);
+        return await handleFamilies(env, method, id, request, projectId);
       case "members":
-        return handleMembers(env, method, id, request, projectId);
+        return await handleMembers(env, method, id, request, projectId);
       case "carry-items":
-        return handleCarryItems(env, method, id, request, projectId);
+        return await handleCarryItems(env, method, id, request, projectId);
       case "shopping-items":
-        return handleShoppingItems(env, method, id, request, projectId);
+        return await handleShoppingItems(env, method, id, request, projectId);
       case "purchases":
-        return handlePurchases(env, method, id, request, projectId);
+        return await handlePurchases(env, method, id, request, projectId);
       case "settlement":
         if (method !== "GET") return err("不支持的方法", 405);
         return json({ ok: true, data: await computeSettlement(env, projectId) });
@@ -354,18 +370,20 @@ export async function onRequest(context) {
         if (method !== "GET") return err("不支持的方法", 405);
         return json({ ok: true, data: await computeOverview(env, projectId, proj) });
       case "logs":
-        if (method === "GET") return handleLogs(env, request, projectId);
+        if (method === "GET") return await handleLogs(env, request, projectId);
         if (method === "DELETE") {
           // 带 id → 删除单条；不带 id → 一键清除当前项目的全部日志
-          if (id) return handleLogDelete(env, id, request, projectId, me);
-          return handleLogClear(env, request, projectId, me);
+          if (id) return await handleLogDelete(env, id, request, projectId, me);
+          return await handleLogClear(env, request, projectId, me);
         }
         return err("不支持的方法", 405);
       default:
         return err("接口不存在", 404);
     }
   } catch (e) {
-    return err("服务器错误：" + (e && e.message ? e.message : String(e)), 500);
+    // 详情只留在服务端日志里：错误栈可能含 SQL / 表结构，不要回显给浏览器。
+    console.error("[api] unhandled error:", e);
+    return err("服务器内部错误，请稍后重试", 500);
   }
 }
 
@@ -768,6 +786,17 @@ async function handleMembers(env, method, id, request, projectId) {
 }
 
 // ---------- 携带物品（各家庭自管自己的，全员可见）----------
+// 老库里 carry_items.family_id 允许为 NULL（schema 没加 NOT NULL）：无归属的历史记录
+// 不再比对归属，但仍必须带身份头，日志才能记到操作者，不允许匿名写入。
+function requireCarryOwner(request, row) {
+  const myFamily = actorFamilyId(request);
+  if (!myFamily) return err("请先选择你所属的家庭", 403);
+  if (row && row.family_id != null && Number(row.family_id) !== Number(myFamily)) {
+    return err("只能管理自己家庭的携带物品", 403);
+  }
+  return null;
+}
+
 async function handleCarryItems(env, method, id, request, projectId) {
   if (method === "GET") {
     const rows = await env.DB
@@ -779,9 +808,13 @@ async function handleCarryItems(env, method, id, request, projectId) {
   if (method === "POST") {
     const b = await readJson(request);
     if (!b || !String(b.name || "").trim()) return err("缺少物品名称");
+    // 身份只认 X-Family-Id：原来 toId(b.family_id) || myFamily 允许把物品塞进别家名下。
     const myFamily = actorFamilyId(request);
-    const familyId = toId(b.family_id) || myFamily;
-    if (!familyId) return err("请先选择你所属的家庭");
+    if (!myFamily) return err("请先选择你所属的家庭", 403);
+    if (b.family_id !== undefined && toId(b.family_id) !== myFamily) {
+      return err("登记家庭与当前家庭不一致", 403);
+    }
+    const familyId = myFamily;
     // 该家庭必须属于当前项目，避免把记录错记到别的项目的家庭上
     const belong = await env.DB
       .prepare("SELECT id FROM families WHERE id = ? AND project_id = ?")
@@ -816,9 +849,8 @@ async function handleCarryItems(env, method, id, request, projectId) {
     const old = await env.DB.prepare("SELECT * FROM carry_items WHERE id = ? AND project_id = ?").bind(id, projectId).first();
     if (!old) return err("物品不存在", 404);
     const myFamily = actorFamilyId(request);
-    if (myFamily && old.family_id && old.family_id !== myFamily) {
-      return err("只能管理自己家庭的携带物品", 403);
-    }
+    const ownGuard = requireCarryOwner(request, old);
+    if (ownGuard) return ownGuard;
     const b = (await readJson(request)) || {};
     // 数量是自由文本（「2 箱」「1 提」），只去首尾空格；留空表示清空数量。
     const nextName = b.name !== undefined ? String(b.name).trim() || old.name : old.name;
@@ -847,9 +879,8 @@ async function handleCarryItems(env, method, id, request, projectId) {
     if (!id) return err("缺少 id");
     const old = await env.DB.prepare("SELECT * FROM carry_items WHERE id = ? AND project_id = ?").bind(id, projectId).first();
     const myFamily = actorFamilyId(request);
-    if (old && myFamily && old.family_id && old.family_id !== myFamily) {
-      return err("只能管理自己家庭的携带物品", 403);
-    }
+    const ownGuard = requireCarryOwner(request, old);
+    if (ownGuard) return ownGuard;
     await env.DB.prepare("DELETE FROM carry_items WHERE id = ? AND project_id = ?").bind(id, projectId).run();
     await addLog(env, projectId, {
       familyId: myFamily,
@@ -929,7 +960,7 @@ async function handleShoppingItems(env, method, id, request, projectId) {
     if (b.claim !== undefined) {
       const myFamily = actorFamilyId(request);
       if (b.claim) {
-        if (!myFamily) return err("请先选择你所属的家庭");
+        if (!myFamily) return err("请先选择你所属的家庭", 403);
         const fam = await env.DB
           .prepare("SELECT name FROM families WHERE id = ? AND project_id = ?")
           .bind(myFamily, projectId)
@@ -957,9 +988,10 @@ async function handleShoppingItems(env, method, id, request, projectId) {
       if (await hasLinkedPurchase(env, projectId, old)) {
         return err("这一项已经采购过了，不能取消接任务；删掉对应的采购记录会自动回到「未接单 + 待购」", 403);
       }
-      // 取消：只允许接单的那个家庭自己取消
+      // 取消：只允许接单的那个家庭自己取消，且必须带身份头（不能匿名取消别家的接单）
       if (!old.claimed_family_id) return json({ ok: true });
-      if (myFamily && old.claimed_family_id !== myFamily) return err("只能取消自己家庭接的任务", 403);
+      const ownGuard = requireOwnFamily(request, old.claimed_family_id, "只能取消自己家庭接的任务");
+      if (ownGuard) return ownGuard;
       await env.DB
         .prepare("UPDATE shopping_items SET claimed_family_id = NULL, claimed_at = '' WHERE id = ? AND project_id = ?")
         .bind(id, projectId)
@@ -1090,16 +1122,21 @@ async function handlePurchases(env, method, id, request, projectId) {
     const b = await readJson(request);
     const itemName = String((b && b.item_name) || "").trim();
     if (!itemName) return err("缺少采购项名称");
+    // 身份只认 X-Family-Id：原来 toId(b.family_id) || myFamily 允许把账记到别家名下。
     const myFamily = actorFamilyId(request);
-    const familyId = toId(b.family_id) || myFamily;
-    if (!familyId) return err("请先选择你所属的家庭");
+    if (!myFamily) return err("请先选择你所属的家庭", 403);
+    if (b && b.family_id !== undefined && toId(b.family_id) !== myFamily) {
+      return err("登记家庭与当前家庭不一致", 403);
+    }
+    const familyId = myFamily;
     // 该家庭必须属于当前项目，否则这笔采购会记到别的项目的家庭上，结算口径随之出错
     const belong = await env.DB
       .prepare("SELECT id FROM families WHERE id = ? AND project_id = ?")
       .bind(familyId, projectId)
       .first();
     if (!belong) return err("所选家庭不属于当前项目", 400);
-    const amount = Number(b.amount) || 0;
+    const amount = parseAmount(b && b.amount);
+    if (amount === null) return err("金额必须是不小于 0 的数字");
     const itemId = toId(b.item_id);
     const r = await env.DB
       .prepare(
@@ -1139,13 +1176,13 @@ async function handlePurchases(env, method, id, request, projectId) {
     // 只能改自家登记的记录，且只改金额：物品、登记家庭、时间一概不开放，
     // 否则一笔别人的账可以被改到任意家庭名下，结算口径就乱了。
     const myFamily = actorFamilyId(request);
-    if (!myFamily) return err("请先选择你所属的家庭", 400);
+    if (!myFamily) return err("请先选择你所属的家庭", 403);
     if (Number(old.family_id) !== Number(myFamily)) {
       return err("只能修改自家登记的采购金额，其他家庭的记录只能查看", 403);
     }
     if (b.amount === undefined) return err("目前只支持修改金额");
-    const amount = Number(b.amount);
-    if (!Number.isFinite(amount) || amount < 0) return err("金额必须是不小于 0 的数字");
+    const amount = parseAmount(b.amount);
+    if (amount === null) return err("金额必须是不小于 0 的数字");
     if (amount === Number(old.amount)) return json({ ok: true });
     await env.DB
       .prepare("UPDATE purchases SET amount = ? WHERE id = ? AND project_id = ?")
@@ -1166,7 +1203,7 @@ async function handlePurchases(env, method, id, request, projectId) {
     if (!old) return err("采购记录不存在", 404);
     // 只能删自家登记的：这笔采购挂在哪个家庭名下，就由哪个家庭来删；其他家庭只看得到、删不掉
     const myFamily = actorFamilyId(request);
-    if (!myFamily) return err("请先选择你所属的家庭", 400);
+    if (!myFamily) return err("请先选择你所属的家庭", 403);
     if (Number(old.family_id) !== Number(myFamily)) return err("只能删除自家登记的采购记录，其他家庭只能查看", 403);
     await env.DB.prepare("DELETE FROM purchases WHERE id = ? AND project_id = ?").bind(id, projectId).run();
     // 删掉这笔记录后，按「还有没有采购记录指向该项」重新派生清单状态：
@@ -1431,8 +1468,13 @@ async function readDataset(env, name, projectId, proj) {
 async function handlePageData(env, request, projectId, proj) {
   let tab = "all";
   try { tab = new URL(request.url).searchParams.get("tab") || "all"; } catch {}
+  // PAGE_DATASETS 是普通对象，直接索引会被原型属性命中：tab=constructor / __proto__
+  // 会取到非数组值，下面的 names.map 抛 TypeError。用 hasOwn 做严格白名单，
+  // 未知值一律 400；错误文案也不回显未经校验的输入。
+  if (!Object.prototype.hasOwnProperty.call(PAGE_DATASETS, tab)) {
+    return err("未知的页签", 400);
+  }
   const names = PAGE_DATASETS[tab];
-  if (!names) return err("未知的页签：" + tab);
   // version 必须先取：读数据期间若有新写入，其日志 id 会大于 version，下一轮探针仍能发现。
   // 反过来（先读数据再取 version）会把尚未包含进响应的新日志也算进游标，导致变化被漏掉。
   const v = (await env.DB.prepare("SELECT COALESCE(MAX(id), 0) AS v FROM logs WHERE project_id = ?").bind(projectId).first()) || {};

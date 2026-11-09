@@ -282,7 +282,7 @@ npm run dev                 # 启动本地站点
 | `npm run dev` | 本地启动（端口 8788） |
 | `npm run db:init` | 本地建表 |
 | `npm run db:seed` | 本地导入演示数据 |
-| `npm run deploy` | 部署到 Cloudflare Pages |
+| `npm run deploy` | 部署到 Cloudflare Pages 生产环境（等价于下面的 `pages deploy public ... --branch=production`） |
 
 ---
 
@@ -291,6 +291,10 @@ npm run dev                 # 启动本地站点
 前提：一个 Cloudflare 账号；本机装好 Node.js（命令都用 `npx wrangler`，无需全局安装）。
 
 部署分两种情况：**首次部署**（第一次上线，要把 Pages 项目、线上数据库、进入口令都建起来）和**后续更新**（项目已存在，只推代码）。首次部署的顺序比较讲究，见下。
+
+> ⚠️ **`--branch` 必须等于该 Pages 项目的生产分支**，本项目是 `production`（wrangler 首次创建「直接上传」项目时，生产分支的默认值就是 `production`）。它和**本地 git 分支名无关**：本项目是把本地 `public` 目录直接上传，不是 Git 集成部署。不写 `--branch` 时 wrangler 会自动取当前 git 分支（本仓库是 `main`），写错都会变成 **Preview 部署**，而 `PASSCODE` / `ADMIN_PASSCODE` / `SUPER_PASSCODE` 与 D1 绑定通常只配在 Production，结果就是登录 401、接口 500。生产分支可在 Dashboard → **Settings → Builds & deployments → Production branch** 查看，或执行 `npx wrangler pages deployment list --project-name=team-building-site` 看哪条部署被标为 Production；若不是 `production`，把命令里的值替换掉。
+>
+> `public` 目录参数**照常传**：`wrangler.toml` 的 `pages_build_output_dir = "./public"` 指向同一个目录，wrangler 取 `命令行参数 ?? 配置值`，两者不冲突；省略目录参数时也由配置兜底。
 
 ### 一、首次部署
 
@@ -316,7 +320,7 @@ npx wrangler d1 execute team_building --remote --file=./seed.sql
 **步骤 3：先部署一次，把 Pages 项目建出来**
 
 ```bash
-npx wrangler pages deploy public --project-name=team-building-site
+npx wrangler pages deploy public --project-name=team-building-site --branch=production
 ```
 
 首次执行会提示创建 Pages 项目（省略 `--project-name` 也可以，按提示选择或新建）。完成后拿到一个 `*.pages.dev` 网址。
@@ -340,7 +344,7 @@ npx wrangler pages deploy public --project-name=team-building-site
 **步骤 5：再部署一次，让配置生效**
 
 ```bash
-npx wrangler pages deploy public --project-name=team-building-site
+npx wrangler pages deploy public --project-name=team-building-site --branch=production
 ```
 
 （在 Dashboard 点一次「重新部署」效果相同。）完成后打开 `*.pages.dev`，用第 4 步设的口令登录。
@@ -359,6 +363,8 @@ npx wrangler pages deploy public --project-name=team-building-site
 ```bash
 npx wrangler pages deploy public --project-name=team-building-site --branch=production
 ```
+
+`npm run deploy` 等价于上面这条命令（只是不带 `npx` 前缀）。如果工作区有未提交改动，wrangler 会打印一条 warning；`--commit-dirty=true` 只是用来消掉它并给部署打一个 dirty 标记，**不影响实际上传的文件**，也不代表「用 Git 发布」，所以本项目命令里不带它。
 
 若这次更新包含**数据库结构变化**，部署后通常还要对线上库执行升级 SQL（`schema.sql` 用的是 `CREATE TABLE IF NOT EXISTS`，对**已经存在**的表不生效，所以新增字段必须手动 `ALTER`）。本版新增「多口令」与「按口令的管理员密码」，对应三条：
 

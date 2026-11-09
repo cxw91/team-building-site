@@ -7,7 +7,7 @@
     "dev": "wrangler pages dev public --port 8788",
     "db:init": "wrangler d1 execute team_building --local --file=./schema.sql",
     "db:seed": "wrangler d1 execute team_building --local --file=./seed.sql",
-    "deploy": "wrangler pages deploy public"
+    "deploy": "wrangler pages deploy public --project-name=team-building-site --branch=production"
   },
   "devDependencies": {
     "wrangler": "^4.155.0"
