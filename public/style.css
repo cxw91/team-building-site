@@ -1680,16 +1680,12 @@ input[type="number"] {
 }
 
 .sk-hint {
-  margin: 0 0 14px;
+  margin: 0 0 16px;
 }
 
-.sk-cards {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
-  margin-bottom: 22px;
-}
-
+/* 骨架屏直接复用真实卡片 / 面板的类名（.card / .section），占位和加载完成后的
+   版面完全一致：列数、间距、圆角、投影、渐变描边都对齐，数据回来重画时不跳版。
+   内部用 .sk 色块 + 扫光表示「内容还在加载」。 */
 .sk {
   position: relative;
   display: block;
@@ -1707,28 +1703,136 @@ input[type="number"] {
   animation: sk-shimmer 1.35s ease-in-out infinite;
 }
 
+/* KPI 卡占位：沿用 .card 的轮廓，里面一块大数字 + 一块小标签 */
 .sk-card {
-  height: 88px;
-  border-radius: var(--r-lg);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 12px;
 }
 
-.sk-section {
+.sk-num {
+  height: 21px;
+  width: 64%;
+  border-radius: 7px;
+}
+
+.sk-lbl {
+  height: 12px;
+  width: 38%;
+  border-radius: 6px;
+}
+
+/* 面板占位：沿用 .section 的轮廓，顶部一条短标题占位 + 几行内容占位 */
+.sk-panel {
   display: grid;
   gap: 12px;
-  padding: 18px 20px;
-  border: 1px solid var(--line);
-  border-radius: var(--r-lg);
-  background: var(--surface-2);
 }
 
 .sk-line {
   width: 100%;
   height: 12px;
+  border-radius: 6px;
 }
 
 .sk-line.w40 { width: 40%; }
 .sk-line.w60 { width: 60%; }
 .sk-line.w80 { width: 80%; }
+.sk-line.w24 { width: 24%; }
+
+/* 面板占位内部：标题与内容之间的间距交给 grid gap 管，去掉 .section-head 自带的 margin，避免双重留白 */
+.sk-panel > .section-head { margin-bottom: 0; }
+
+/* 列表类骨架：顶部一行输入 / 筛选条（等宽小块）+ 多行列表（左名称 + 右操作） */
+.sk-formrow {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.sk-formrow .sk-line {
+  height: 36px;
+  border-radius: var(--r-md);
+  flex: 1 1 120px;
+}
+
+.sk-rows {
+  display: grid;
+  gap: 14px;
+}
+
+.sk-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.sk-row .sk-line:first-child { flex: 1 1 auto; max-width: 62%; }
+.sk-row .sk-line:last-child { flex: 0 0 22%; }
+
+/* 结算表格类骨架：5 列等宽网格，表头 + 若干数据行 */
+.sk-table {
+  display: grid;
+  gap: 12px;
+}
+
+.sk-trow {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.sk-trow .sk-line { height: 14px; }
+
+/* 筛选条占位（采购清单 / 采购明细）：一排胶囊形小块 + 一个较宽搜索块 */
+.sk-filterbar {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 2px;
+}
+
+.sk-filterbar .sk-line {
+  height: 34px;
+  border-radius: 999px;
+  flex: 1 1 90px;
+}
+
+.sk-filterbar .sk-line.w40 { flex: 1 1 220px; }
+
+/* 日志条目占位：仿真实 .content > .logs 卡片（标题栏 + 列表），浅色下也有卡片边界 */
+.sk-log-head { margin-bottom: 6px; }
+
+/* 列表卡片：对齐真实日志页 .content > .logs（径向高光 + surface 底 + 1px 边 + 投影） */
+.sk-log-card {
+  padding: 12px 14px;
+  border-radius: var(--r-lg);
+  background:
+    radial-gradient(70% 62% at 100% 0%, var(--card-glow), transparent 66%),
+    var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: var(--sh-1);
+}
+
+.sk-logs {
+  display: grid;
+  gap: 12px;
+}
+
+.sk-log-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px;
+  border-top: 1px solid var(--line);
+  border-radius: var(--r-sm);
+}
+
+.sk-log-item .sk-line:nth-child(1) { flex: 0 0 110px; }   /* 时间 */
+.sk-log-item .sk-line:nth-child(2) { flex: 1 1 auto; }    /* 正文 */
+.sk-log-item .sk-line:nth-child(3) { flex: 0 0 44px; }    /* 删除 */
 
 @keyframes sk-shimmer {
   to { transform: translateX(100%); }
@@ -1741,15 +1845,6 @@ input[type="number"] {
 }
 
 .load-error p { margin: 0; }
-
-@media (max-width: 1180px) {
-  .sk-cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-
-@media (max-width: 560px) {
-  .sk-cards { gap: 10px; }
-  .sk-card { height: 74px; }
-}
 
 @media (prefers-reduced-motion: reduce) {
   .sk::after { animation: none; }
@@ -3456,6 +3551,43 @@ html.modal-open .bg-aurora * {
   margin-top: 18px;
   flex-wrap: wrap;
 }
+
+/* ---------- 删除确认弹窗：原地加载态 ----------
+   点「确定删除」后不关弹窗，同一个 .modal-card 切成转圈 + 文案，直到
+   DELETE、附加取数、render() 整页重画都完成才收起。转圈复用 @keyframes spin，
+   颜色全走设计令牌，深浅主题自动适配；全局 prefers-reduced-motion 段会停掉旋转。 */
+.modal-loading {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 0 6px;
+  text-align: center;
+}
+.modal-spinner {
+  width: 34px;
+  height: 34px;
+  border: 2.5px solid var(--line-strong);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: spin 0.85s linear infinite;
+}
+.modal-loading-label {
+  font-size: 14px;
+  font-weight: 620;
+  color: var(--text);
+}
+.modal-loading-hint {
+  font-size: 12.8px;
+  line-height: 1.6;
+  color: var(--muted);
+  margin: 0;
+}
+#confirmModal.is-busy .modal-title,
+#confirmModal.is-busy .modal-desc,
+#confirmModal.is-busy .modal-actions { display: none; }
+#confirmModal.is-busy .modal-loading { display: flex; }
+#confirmModal.is-busy .modal-card { cursor: progress; }
 
 /* 新建项目里的家庭输入行：家庭名称 + 人数 + 一条备注（忌口 / 过敏） */
 .fam-row {

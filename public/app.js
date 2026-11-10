@@ -194,7 +194,9 @@ async function api(path, { method = "GET", body, withProject = true, adminPw, si
   if (state.familyId) headers["x-family-id"] = String(state.familyId);
   if (adminPw) headers["x-admin-passcode"] = String(adminPw);
   // 读请求默认 10s 超时，避免弱网下无限挂起、界面永远停在骨架屏；
-  // 写请求不自动超时：超时后用户重试可能造成重复提交，宁可交给按钮 loading 态盯着。
+  // 写请求默认不超时：超时后用户重试可能造成重复提交，宁可交给按钮 loading 态盯着。
+  // 例外：四类删除的 DELETE 由 performDelete() 显式传 15s（DELETE_TIMEOUT_MS）——
+  // 它的确认弹窗是阻塞式的，请求彻底挂起时会永远转圈。
   // signal 来自整页渲染的「代次」：切页签时会 abort 掉上一轮还在飞的请求。
   const limit = timeoutMs === undefined ? (method === "GET" ? 10000 : 0) : timeoutMs;
   const ctrl = new AbortController();
@@ -227,7 +229,9 @@ async function api(path, { method = "GET", body, withProject = true, adminPw, si
   } catch (e) {
     if (ctrl.signal.aborted) {
       if (signal && signal.aborted) throw new DOMException("请求已取消", "AbortError");
-      throw new Error("网络较慢，请求超时，请重试");
+      const timeoutErr = new Error("网络较慢，请求超时，请重试");
+      timeoutErr.timedOut = true; // 供调用方区分「超时」与普通失败：删除超时后不能引导重试
+      throw timeoutErr;
     }
     throw e;
   } finally {
@@ -446,6 +450,9 @@ function hardenSecretInputs() {
 //    偏移与高度，可视高度不足时切成贴顶 + 内部滚动，并把被挡住的输入框滚回可视区。
 const vv = window.visualViewport || null;
 let openModal = null;
+// 删除确认弹窗的「确定 → 删除 + 界面重绘」加载态。它是全局 UI 状态：
+// 期间禁止关闭弹窗，版本探针也暂停（pollingAllowed() 会读它），所以提前声明避免 TDZ。
+let confirmBusy = false;
 // 上一次写进 style 的几何值。软键盘弹起的那 200~300ms 里 resize 会连发几十次，
 // 每次都写一遍 top/height 等于逼着浏览器逐帧重排遮罩层；这里只在数值真的变了才写。
 let modalGeom = { top: null, height: null, left: null, width: null };
@@ -674,10 +681,11 @@ function show(view) {
   }
 }
 
-// 本地已有 token 时，启动时先跑一段串行的接口请求才切到项目内。直接用口令卡片当等待页，
-// 用户会以为「没登录成功」并可能重复输入。这里在恢复期间把口令卡片换掉（CSS 里是 display:none，
-// 键盘与读屏都碰不到），只留一张不可交互的加载卡片；恢复结束或失败后必须复位，否则下次
-// 退出登录回到登录页时 .auth 还是隐藏的。
+// 本地已有 token 且**没有上次项目**时，启动时先跑一段串行的接口请求才切到项目中心。
+// 直接用口令卡片当等待页，用户会以为「没登录成功」并可能重复输入。这里在恢复期间把口令
+// 卡片换掉（CSS 里是 display:none，键盘与读屏都碰不到），只留一张不可交互的加载卡片；
+// 恢复结束或失败后必须复位，否则下次退出登录回到登录页时 .auth 还是隐藏的。
+// （有上次项目的刷新恢复不走这里：init() 直接进项目内铺骨架屏，见文件末尾。）
 function setSessionRestoring(on) {
   const view = $("#loginView"), box = $("#sessionLoading");
   if (!view || !box) return;
@@ -1003,6 +1011,14 @@ async function enterProject(id, name) {
   state.purMenuId = null;
   resetTabCache(); // 换项目：清掉上一个项目的页签缓存
   state.projectStatus = (state.projects.find((p) => p.id === state.projectId) || {}).status || "";
+  // 「进入项目」立刻给反馈：先切到项目内视图并铺骨架屏，再等下面的 tab=all 聚合取数。
+  // 弱网下最慢的就是这段等待；以前要等它跑完 showApp() 才创建骨架屏，用户全程盯着项目中心。
+  // 先清掉上一个项目的家庭，否则骨架屏期间顶栏会短暂显示旧家庭名 / 旧家庭下拉。
+  state.familyId = null;
+  state.families = [];
+  show("appView");
+  renderChrome();
+  showSkeleton();
   // 一次请求取齐项目信息与七个页签的数据：替代原来的「项目详情 + 家庭」两请求、
   // 首屏 render() 的当前页签取数，以及对其余页签的批量预热（约 14 个请求）。
   // tab=all 成了单点，失败时先重试一次（多数是偶发超时）；两次都失败通常是聚合端点不可用
@@ -1268,7 +1284,9 @@ function openTab(tab) {
 function showApp() {
   show("appView");
   renderChrome();
-  showSkeleton(); // 首屏取数前先给即时反馈，别让内容区空等
+  // enterProject() 在发请求之前已经铺过骨架屏，这里重复调用是幂等的（见 showSkeleton）；
+  // 从「选择家庭」页进来、或项目中心还没铺过时才真正新建。
+  showSkeleton();
   // bootstrap 已把七个页签的数据取齐时只重画、不发请求；后续刷新仍由切页签 / 主动操作 /
   // 切回前台 / 30 秒版本探针驱动。探针由 show("appView") 统一启动，这里不用再管。
   render({ skipFetch: bootstrapReady }).catch(() => {});
@@ -1334,6 +1352,7 @@ function pollingAllowed() {
   // 首屏 / 无缓存页签的整页取数还在飞时别轮询，否则两组请求打同一批接口
   if (!state.tabReady[state.tab]) return false;
   if (openModal) return false;      // 管理密码 / 确认删除等弹窗开着
+  if (confirmBusy) return false;    // 删除确认弹窗正在等删除 + 重绘，别让探针插进来重画
   if (INFLIGHT.size) return false;  // 有写请求在途，别在提交过程中重画
   if (isEditingNow()) return false;
   if (Date.now() - lastActivity > POLL_IDLE_MS) return false; // 发呆太久就停，省额度
@@ -1459,15 +1478,124 @@ function clearFields(...ids) {
 // ---------- 加载反馈：骨架屏 / 失败重试 ----------
 // 整页取数期间先给 #content 一个即时反馈，避免「侧栏高亮切了、内容区毫无动静」。
 // aria-busy 让读屏也知道内容还在加载；paintTab 与错误卡片负责清掉它。
-function showSkeleton() {
+// ---------- 加载反馈：骨架屏 / 失败重试 ----------
+// 整页取数期间先给 #content 一个即时反馈，避免「侧栏高亮切了、内容区毫无动静」。
+// aria-busy 让读屏也知道内容还在加载；paintTab 与错误卡片负责清掉它。
+// 每页一套骨架屏：占位与各自真实版面一致（复用 .card / .section 等真实类名），
+// 数据回来重画时不跳版。列表类（携带物品 / 采购清单 / 采购记录 / 日志）共用
+// skeletonList()；成员、结算各自一套；未知页签兜底回概览。
+function showSkeleton(tab = state.tab) {
   const c = $("#content");
   if (!c) return;
+  // 已经处于加载态就直接复用，别重建 DOM —— 否则微光动画从头重播，弱网下看着像闪了一下。
+  if (c.getAttribute("aria-busy") === "true" && c.querySelector(".loading-skeleton")) return;
   c.setAttribute("aria-busy", "true");
+  const builders = {
+    overview: skeletonOverview,
+    members: skeletonMembers,
+    carry: skeletonCarry,
+    shopping: skeletonShopping,
+    purchases: skeletonPurchases,
+    settlement: skeletonSettlement,
+    logs: skeletonLogs,
+  };
+  const build = builders[tab] || skeletonOverview;
   c.innerHTML = `<div class="loading-skeleton" role="status" aria-live="polite">
       <p class="hint sk-hint">正在加载…</p>
-      <div class="sk-cards"><span class="sk sk-card"></span><span class="sk sk-card"></span><span class="sk sk-card"></span><span class="sk sk-card"></span></div>
-      <div class="sk-section"><span class="sk sk-line w60"></span><span class="sk sk-line"></span><span class="sk sk-line w80"></span><span class="sk sk-line w40"></span></div>
+      ${build()}
     </div>`;
+}
+
+// 概览：7 张 KPI 卡（.cards 网格）+ 3 个面板（预算 / 奖励 / 任务接单）
+function skeletonOverview() {
+  const skCard = '<div class="card sk-card"><span class="sk sk-num"></span><span class="sk sk-lbl"></span></div>';
+  const skPanel = (lines) =>
+    `<div class="section sk-panel"><span class="sk sk-line w40"></span>${lines
+      .map((w) => `<span class="sk sk-line${w ? " " + w : ""}"></span>`)
+      .join("")}</div>`;
+  return `<div class="cards">${skCard.repeat(7)}</div>`
+    + skPanel(["w80", "", "w60"])
+    + skPanel(["w80", "", "w60", "w40"])
+    + skPanel(["w80", "", "w60"]);
+}
+
+// 携带物品：按家庭分块，每块含标题（家庭名 + 项数）+ 多条物品行 + 自家底部的「添加」输入条
+function skeletonCarry() {
+  const item = '<div class="sk-row"><span class="sk sk-line"></span><span class="sk sk-line"></span></div>';
+  const fam = (withAdd) => `<div class="section sk-panel">
+      <div class="section-head"><span class="sk sk-line w40"></span><span class="sk sk-line w24"></span></div>
+      <div class="sk-rows">${item.repeat(3)}</div>
+      ${withAdd
+        ? '<div class="sk-formrow"><span class="sk sk-line"></span><span class="sk sk-line"></span><span class="sk sk-line"></span></div>'
+        : ""}
+    </div>`;
+  return fam(true).repeat(2);
+}
+
+// 采购清单：单块外壳（标题 + 添加输入条 + 筛选条 + 列表行）
+function skeletonShopping() {
+  const item = '<div class="sk-row"><span class="sk sk-line"></span><span class="sk sk-line"></span></div>';
+  return `<div class="section sk-panel">
+      <div class="section-head"><span class="sk sk-line w40"></span><span class="sk sk-line w24"></span></div>
+      <div class="sk-formrow"><span class="sk sk-line"></span><span class="sk sk-line"></span><span class="sk sk-line"></span><span class="sk sk-line"></span></div>
+      <div class="sk-filterbar"><span class="sk sk-line"></span><span class="sk sk-line"></span><span class="sk sk-line"></span><span class="sk sk-line w40"></span></div>
+      <div class="sk-rows">${item.repeat(5)}</div>
+    </div>`;
+}
+
+// 采购记录：登记表单 + 各家金额汇总（进度条 + 家庭行）+ 采购明细（含筛选条）
+function skeletonPurchases() {
+  const item = '<div class="sk-row"><span class="sk sk-line"></span><span class="sk sk-line"></span></div>';
+  const reg = `<div class="section sk-panel">
+      <div class="section-head"><span class="sk sk-line w40"></span></div>
+      <div class="sk-formrow"><span class="sk sk-line"></span><span class="sk sk-line"></span><span class="sk sk-line"></span></div>
+    </div>`;
+  const summary = `<div class="section sk-panel">
+      <div class="section-head"><span class="sk sk-line w40"></span></div>
+      <span class="sk sk-line" style="height:10px"></span>
+      <div class="sk-rows">${'<div class="sk-row"><span class="sk sk-line"></span><span class="sk sk-line"></span></div>'.repeat(3)}</div>
+    </div>`;
+  const details = `<div class="section sk-panel">
+      <div class="section-head"><span class="sk sk-line w40"></span><span class="sk sk-line w24"></span></div>
+      <div class="sk-filterbar"><span class="sk sk-line"></span><span class="sk sk-line w40"></span></div>
+      <div class="sk-rows">${item.repeat(5)}</div>
+    </div>`;
+  return reg + summary + details;
+}
+
+// 日志：标题栏（共 N 条 + 清除）+ 多条日志条目（时间 + 正文 + 删除），
+// 列表包在仿真实 .content > .logs 的卡片里 —— 浅色主题下也有明确卡片边界，不漂浮。
+function skeletonLogs() {
+  const item = '<div class="sk-log-item"><span class="sk sk-line"></span><span class="sk sk-line"></span><span class="sk sk-line"></span></div>';
+  return `<div class="section-head sk-log-head"><span class="sk sk-line w40"></span><span class="sk sk-line w24"></span></div>
+    <div class="sk-log-card"><div class="sk-logs">${item.repeat(6)}</div></div>`;
+}
+
+// 成员：每个家庭一个区块（标题 + 成员行）+ 底部「新增家庭」区块
+function skeletonMembers() {
+  const fam = `<div class="section sk-panel">
+      <div class="section-head"><span class="sk sk-line w40"></span><span class="sk sk-line w24"></span></div>
+      <div class="sk-rows">
+        <div class="sk-row"><span class="sk sk-line"></span><span class="sk sk-line"></span></div>
+        <div class="sk-row"><span class="sk sk-line"></span><span class="sk sk-line"></span></div>
+      </div>
+    </div>`;
+  const add = `<div class="section sk-panel">
+      <div class="section-head"><span class="sk sk-line w40"></span></div>
+      <div class="sk-formrow"><span class="sk sk-line"></span><span class="sk sk-line"></span><span class="sk sk-line"></span></div>
+    </div>`;
+  return fam.repeat(2) + add;
+}
+
+// 结算：卡片行（总花费 / 任务奖金 / 每家应摊）+ 两张表格（任务奖金 / 每家结算）
+function skeletonSettlement() {
+  const skCard = '<div class="card sk-card"><span class="sk sk-num"></span><span class="sk sk-lbl"></span></div>';
+  const trow = `<div class="sk-trow">${'<span class="sk sk-line"></span>'.repeat(5)}</div>`;
+  const table = `<div class="section sk-panel">
+      <div class="section-head"><span class="sk sk-line w40"></span></div>
+      <div class="sk-table">${trow.repeat(5)}</div>
+    </div>`;
+  return `<div class="cards">${skCard.repeat(3)}</div>` + table.repeat(2);
 }
 
 function showLoadError(msg) {
@@ -3857,25 +3985,66 @@ $("#adminPw").addEventListener("keydown", (e) => {
 });
 
 // ---------- 删除确认弹窗（Alert Dialog） ----------
+// 家庭 / 携带物品 / 采购清单 / 自家登记的采购记录，四类行内删除共用这一条路径：
+// 确认 → 弹窗原地切成加载态 → 等 DELETE + 附加取数 + 整页重画完成 → 关闭 + toast。
+// 危险确认不做「轻关闭」：点遮罩 / 按 Esc 都不关，只能显式点「取消」；
+// 删除流程结束后由 hideConfirm(true) 统一收起，加载期间连「取消」也被挡住。
+const CONFIRM_BUSY_MIN_MS = 450; // 至少转这么久，网络快时加载态不会一闪而过
+const DELETE_TIMEOUT_MS = 15000; // 四类删除的写请求超时：极端弱网下别让确认弹窗永远转圈
 let confirmOpts = null;
-function showConfirm({ title, message, okText = "确定", danger = false, onOk }) {
+let confirmBusyAt = 0;
+
+function setConfirmBusy(on) {
+  const modal = $("#confirmModal");
+  confirmBusy = on;
+  modal.classList.toggle("is-busy", on);
+  $("#confirmOkBtn").disabled = on;
+  $("#confirmCancelBtn").disabled = on;
+  if (on) {
+    modal.setAttribute("aria-busy", "true");
+    confirmBusyAt = Date.now();
+    // 按钮被隐藏后焦点会掉回 body：挪到卡片上，键盘用户不会 Tab 到底层页面
+    const card = modal.querySelector(".modal-card");
+    if (card) card.focus({ preventScroll: true });
+  } else {
+    modal.removeAttribute("aria-busy");
+  }
+}
+
+function showConfirm({ title, message, okText = "确定", danger = false, busyText = "正在处理…", onOk }) {
+  if (confirmBusy) return; // 上一轮删除还没结束，不接受新的确认框
   confirmOpts = { onOk };
   $("#confirmTitle").textContent = title || "确认";
   $("#confirmDesc").textContent = message || "";
+  $("#confirmLoadingText").textContent = busyText;
   const okBtn = $("#confirmOkBtn");
   okBtn.textContent = okText;
   okBtn.classList.toggle("danger", !!danger);
+  setConfirmBusy(false); // 复位上一轮可能残留的加载态外观（含 disabled）
   $("#confirmModal").classList.remove("hidden");
   okBtn.focus();
 }
-function hideConfirm() {
+
+// force=true 只在删除流程结束时调用；加载态期间的普通关闭一律拒绝
+function hideConfirm(force = false) {
+  if (confirmBusy && !force) return;
+  setConfirmBusy(false);
   $("#confirmModal").classList.add("hidden");
   confirmOpts = null;
 }
+
 async function performDelete(kind, id) {
   const path = { family: "families", carry: "carry-items", shopping: "shopping-items", purchase: "purchases" }[kind];
   if (!path) return;
-  await api("/" + path + "/" + id, { method: "DELETE" });
+  try {
+    // 其它写请求一律不超时，唯独删除例外：确认弹窗是阻塞式的，请求彻底挂起时会永远转圈。
+    await api("/" + path + "/" + id, { method: "DELETE", timeoutMs: DELETE_TIMEOUT_MS });
+  } catch (e) {
+    // 写请求超时 ≠ 删除失败：可能已删成功、只是响应没回来。不能引导「重试」（会二次提交），
+    // 让用户稍后点「刷新」看最新数据；弹窗由外层 finally 关闭，toast 说清现状。
+    if (e && e.timedOut) throw new Error("网络较慢，删除结果未知，请稍后点「刷新」确认");
+    throw e;
+  }
   if (kind === "family") {
     await loadFamilies();
     if (state.familyId && !state.families.some((f) => f.id === Number(state.familyId))) {
@@ -3886,6 +4055,9 @@ async function performDelete(kind, id) {
   }
   state.pending = null;
   await render();
+  // render() 取数失败时是把 #content 画成「加载失败 + 重试」后正常返回（不抛错）。
+  // 界面没真正更新就别报「已删除」：这里补一刀，交给外层 toast 说清现状。
+  if ($("#content .load-error")) throw new Error("已删除，但界面刷新失败，请点刷新重试");
 }
 function askDelete(kind, id) {
   const labels = { family: "家庭", carry: "携带物品", shopping: "采购项", purchase: "采购记录" };
@@ -3895,25 +4067,31 @@ function askDelete(kind, id) {
     message: `确定要删除这个${name}吗？删除后不可恢复。`,
     okText: "确定删除",
     danger: true,
+    busyText: `正在删除${name}…`,
     onOk: () => performDelete(kind, id),
   });
 }
 $("#confirmOkBtn").addEventListener("click", async () => {
+  if (confirmBusy) return; // 连点保护：第二次点击时加载态已经挂上
   const opts = confirmOpts;
   if (!opts) return;
-  hideConfirm();
+  setConfirmBusy(true);
   try {
-    if (opts.onOk) await opts.onOk();
+    if (opts.onOk) await opts.onOk(); // DELETE + /families + render() 整页取数重画，全部等完
     toast("已删除");
   } catch (e) {
-    toast(e.message);
+    toast(e.message || "删除失败，请重试");
+  } finally {
+    // 至少显示满 CONFIRM_BUSY_MIN_MS 再收，避免网络快时弹窗一闪而过
+    const wait = CONFIRM_BUSY_MIN_MS - (Date.now() - confirmBusyAt);
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    hideConfirm(true);
   }
 });
-$("#confirmCancelBtn").addEventListener("click", hideConfirm);
-$("#confirmModal").addEventListener("click", (e) => { if (e.target === $("#confirmModal")) hideConfirm(); });
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("#confirmModal").classList.contains("hidden")) hideConfirm();
-});
+// 只能点「取消」关闭：故意不挂遮罩 click 与全局 Esc 监听。
+// 删除是不可撤销操作，误点弹窗外一片、或顺手按一下 Esc 就把确认框关掉属于「轻关闭」，
+// 这里一律不提供；其它弹窗（管理密码 / 口令管理 / 新建项目）的关闭行为不受影响。
+$("#confirmCancelBtn").addEventListener("click", () => hideConfirm());
 
 // ---------- 口令管理（登录页）----------
 // 一个口令对应一份独立的项目数据：登录某口令，项目中心与项目内只呈现该口令名下的项目。
@@ -4324,6 +4502,24 @@ function watchAutofill() {
   applyTheme(currentTheme(), false); // 主题已由 index.html 头部脚本定好，这里只同步按钮文案
   constellationCtl = initConstellation();
   if (!state.token) return show("loginView");
+  // 上次停在某个项目里：刷新后不再显示「正在恢复会话」卡片，直接进项目内铺骨架屏。
+  // loadProjects() 与 enterProject() 的 tab=all 两段等待全程都有反馈；
+  // 口令失效由 api() 的 401 处理踢回登录页，项目已不存在则回到项目中心（骨架屏会被换掉）。
+  // 顶栏先用占位名，真实项目名等 loadProjects 回来后由 enterProject() 覆盖。
+  if (state.projectId) {
+    state.projectName = state.projectName || "团建管理";
+    show("appView");
+    renderChrome();
+    showSkeleton();
+    try {
+      await afterLogin();
+    } catch {
+      logout();
+    }
+    return;
+  }
+  // 本地有 token 但没有上次项目（上次停在项目中心）：目的地是项目中心而非项目内，
+  // 没有对应的骨架屏，仍用「正在恢复会话」卡片兜住这段等待。
   show("loginView"); // 显式进入登录视图：同时启动深色主题下的星座背景，供加载态复用
   setSessionRestoring(true);
   try {

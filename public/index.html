@@ -116,8 +116,9 @@
         </div>
       </div>
     </div>
-    <!-- 自动恢复会话（本地已有 token）：期间不显示可交互的口令框，避免线上网络慢时
-         用户盯着登录页、误以为没登录成功。由 app.js 的 setSessionRestoring() 开关。 -->
+    <!-- 自动恢复会话（本地已有 token 且没有上次项目时才出现）：期间不显示可交互的口令框，
+         避免网络慢时用户盯着登录页、误以为没登录成功。上次停在项目里的刷新已改为直接
+         进项目内铺骨架屏（见 app.js 的 init()），不再走这张卡片。由 setSessionRestoring() 开关。 -->
     <div id="sessionLoading" class="session-loading" hidden role="status" aria-live="polite">
       <div class="panel session-panel">
         <div class="session-spinner" aria-hidden="true"></div>
@@ -301,9 +302,16 @@
 
   <!-- 删除确认弹窗（Alert Dialog） -->
   <div id="confirmModal" class="modal hidden">
-    <div class="modal-card">
+    <div class="modal-card" tabindex="-1">
       <h3 class="modal-title" id="confirmTitle">确认删除</h3>
       <p class="modal-desc" id="confirmDesc"></p>
+      <!-- 点「确定删除」后原地切成加载态：等 DELETE + 整页重新取数重画完成才关闭弹窗。
+           默认由 CSS 隐藏；is-busy 时标题 / 描述 / 按钮一起让位给这块，按钮同时 disabled。 -->
+      <div class="modal-loading" role="status" aria-live="polite">
+        <span class="modal-spinner" aria-hidden="true"></span>
+        <span class="modal-loading-label" id="confirmLoadingText">正在删除…</span>
+        <p class="modal-loading-hint">正在同步最新数据并更新界面，请稍候</p>
+      </div>
       <div class="modal-actions">
         <button id="confirmCancelBtn" class="ghost">取消</button>
         <button id="confirmOkBtn" class="primary danger">确定删除</button>
