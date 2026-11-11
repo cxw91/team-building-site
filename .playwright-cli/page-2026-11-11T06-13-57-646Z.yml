@@ -1,0 +1,8 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e4]:
+    - heading "团建管理" [level=1] [ref=e8]
+    - paragraph [ref=e9]: 请输入团队口令进入
+    - textbox "口令" [ref=e10]
+    - button "进入" [ref=e11] [cursor=pointer]
+    - button "管理口令" [ref=e13] [cursor=pointer]
+  - text: 当前：

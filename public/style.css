@@ -260,6 +260,67 @@ html[data-theme="dark"] {
   --sh-2: 0 30px 70px -30px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 255, 255, 0.04);
 }
 
+/* ==========================================================================
+   强调色覆盖（「设置」弹窗里的圆角色卡）
+   --------------------------------------------------------------------------
+   violet 是默认色，刻意不写任何覆盖 = 完整沿用上面两套主题原本的品牌令牌。
+   其余每张色卡只声明三个值：--a-rgb（品牌色）、--a-ink-rgb（文字色，浅色主题
+   更深一档 / 深色主题更亮一档）、--a-grad（主按钮渐变）；下面一段公共映射把它们
+   铺到全站的品牌令牌上。
+   --a-rgb / --a-ink-rgb 按主题再覆盖一次（深色规则特异性更高），所以公共映射
+   只需写一遍：自定义属性在使用时才替换，会自动取到当前主题的值。
+   所有覆盖都挂在 html 上，和 :root / html[data-theme="dark"] 是同一个元素，
+   --ring-stops、--ring-idle 这类「由别的变量拼出来的令牌」也会跟着一起变。
+   ========================================================================== */
+html[data-accent="ocean"]  { --a-rgb: 47 111 224; --a-ink-rgb: 30 79 176; --a-grad: linear-gradient(132deg, #2457b8 0%, #2f6fe0 55%, #4b8ff2 100%); }
+html[data-accent="teal"]   { --a-rgb: 10 143 165; --a-ink-rgb: 6 106 124;  --a-grad: linear-gradient(132deg, #087c94 0%, #0a8fa5 55%, #22b6c9 100%); }
+html[data-accent="forest"] { --a-rgb: 15 138 92;  --a-ink-rgb: 10 100 66;  --a-grad: linear-gradient(132deg, #0b7049 0%, #0f8a5c 55%, #2aad7c 100%); }
+html[data-accent="amber"]  { --a-rgb: 183 101 10; --a-ink-rgb: 140 74 5;   --a-grad: linear-gradient(132deg, #9c5407 0%, #b7650a 55%, #e08a1c 100%); }
+html[data-accent="rose"]   { --a-rgb: 192 42 99;  --a-ink-rgb: 145 25 72;  --a-grad: linear-gradient(132deg, #991f4d 0%, #c02a63 55%, #d94a82 100%); }
+
+html[data-theme="dark"][data-accent="ocean"]  { --a-rgb: 102 163 255; --a-ink-rgb: 150 190 255; }
+html[data-theme="dark"][data-accent="teal"]   { --a-rgb: 53 214 230;  --a-ink-rgb: 120 230 240; }
+html[data-theme="dark"][data-accent="forest"] { --a-rgb: 79 214 160;  --a-ink-rgb: 140 235 190; }
+html[data-theme="dark"][data-accent="amber"]  { --a-rgb: 255 179 85;  --a-ink-rgb: 255 205 140; }
+html[data-theme="dark"][data-accent="rose"]   { --a-rgb: 255 122 166; --a-ink-rgb: 255 165 195; }
+
+html[data-accent]:not([data-accent="violet"]) {
+  --brand: rgb(var(--a-rgb));
+  --brand-ink: rgb(var(--a-ink-rgb));
+  --brand-soft: rgb(var(--a-rgb) / 0.1);
+  --brand-line: rgb(var(--a-rgb) / 0.32);
+  --grad: var(--a-grad);
+  --edge: rgb(var(--a-rgb) / 0.38);
+  --ring-1: rgb(var(--a-rgb) / 0.62);
+  --halo: rgb(var(--a-rgb) / 0.5);
+  --spot: rgb(var(--a-rgb) / 0.17);
+  --card-glow: rgb(var(--a-rgb) / 0.028);
+  --who-strip-bg: rgb(var(--a-rgb) / 0.1);
+  --who-strip-line: rgb(var(--a-rgb) / 0.55);
+  --who-strip-ink: rgb(var(--a-ink-rgb));
+  --side-active-bg: linear-gradient(100deg, rgb(var(--a-rgb) / 0.2), rgb(var(--a-rgb) / 0.06));
+  --side-active-ring: rgb(var(--a-rgb) / 0.32);
+  --side-active-sh: 0 12px 24px -18px rgb(var(--a-rgb) / 0.75);
+  --side-orb-1: rgb(var(--a-rgb) / 0.2);
+}
+html[data-theme="dark"][data-accent]:not([data-accent="violet"]) {
+  --brand-soft: rgb(var(--a-rgb) / 0.16);
+  --brand-line: rgb(var(--a-rgb) / 0.4);
+  --edge: rgb(var(--a-rgb) / 0.34);
+  --ring-1: rgb(var(--a-rgb) / 0.85);
+  --halo: rgb(var(--a-rgb) / 0.62);
+  --spot: rgb(var(--a-rgb) / 0.24);
+  --card-glow: rgb(var(--a-rgb) / 0.11);
+  --who-strip-bg: rgb(var(--a-rgb) / 0.16);
+  --who-strip-line: rgb(var(--a-rgb) / 0.42);
+  --who-strip-ink: rgb(var(--a-ink-rgb));
+  --side-active-bg: linear-gradient(100deg, rgb(var(--a-rgb) / 0.34), rgb(var(--a-rgb) / 0.1));
+  --side-active-ring: rgba(255, 255, 255, 0.1);
+  --side-active-sh: 0 10px 24px -16px rgb(var(--a-rgb) / 0.95);
+  --side-orb-1: rgb(var(--a-rgb) / 0.34);
+  --side-orb-2: rgb(var(--a-rgb) / 0.16);
+}
+
 /* ---------- 基础 ---------- */
 *,
 *::before,
@@ -4739,4 +4800,406 @@ html[data-theme="dark"] .theme-icon--moon {
   .section.fx-active:not(.readonly), .card.fx-active, .proj-card.fx-active,
   .proj-add.fx-active { animation-play-state: running; }
   .panel.fx-active, .modal-card.fx-active { animation-play-state: running, running; }
+}
+
+/* ==========================================================================
+   侧边栏：图标条 / 展开面板两态
+   --------------------------------------------------------------------------
+   只在桌面（≥901px）生效；≤900px 仍用原来的「固定顶栏 + 底部页签条」。
+   配色全部沿用改版前的 --side-* 令牌：渐变底、顶部光晕、底部渐隐、
+   文字 / 悬停 / 选中 / 滑块一概不另起一套。这里只改几何：两态宽度、
+   行高与圆角、收起时文字淡出、底部开关与唯一保留的那条分割线。
+   状态由 html 上的三个 class 驱动：
+     .side-auto        侧边栏动画已使能（由「设置」弹窗控制，默认关闭）
+     .side-rail        当前处于窄边收起态（手动按钮可切，动画模式下鼠标进出也能切）
+     .side-icon-right  底部按钮显示「竖线靠右」那枚图标（自动悬停态 / 手动窄边）
+   按钮图标与底色跟的是「模式」而不是实时宽度：动画关闭时等于 side-rail；
+   动画开启时只在点按钮时切换，hover 展开 / 收回的补间里保持不变。
+   ========================================================================== */
+:root {
+  --side-full: 248px;
+  --side-rail-w: 64px;
+  /* 宽度、留白、文字、滑块共用同一条时长；展开用 ease-out、收起用 ease-in。
+     所有几何过渡都读 var(--side-ease)，故收起时只需在 html.side-rail 下重定义它，
+     补间方向不同却依旧同步（不会各走各的）。 */
+  --side-dur: 0.3s;
+  --side-ease-out: cubic-bezier(0.4, 0, 0.2, 1);  /* 展开：开头利落、收尾轻缓 */
+  --side-ease-in:  cubic-bezier(0.6, 0, 0.3, 1);  /* 收起：明显慢起步、中段顺、柔收尾，避免宽边→窄边一离开就猛缩 */
+  --side-ease: var(--side-ease-out);
+}
+
+/* 收起态（进入窄边）整体改用「慢起步」曲线：宽→窄时不再开头猛缩一下，
+   配合文字已先淡出，缩回显得柔和而非「啪」地弹回。展开态不受影响。 */
+html.side-rail { --side-ease: var(--side-ease-in); }
+
+/* 底部开关只在桌面侧栏出现；移动端底部横条里不能有这一行。
+   两枚图标（竖线左 / 竖线右）叠在同一位置，按 html.side-icon-right 用 opacity
+   交叉淡入淡出 —— 以前用 display:none/block 硬切，状态变化那一帧图标会「跳」。
+   图标表达的是按钮设定的模式：竖线右 = 自动悬停（或手动窄边），
+   竖线左 = 固定展开（或手动宽边）。 */
+.side-foot { display: none; }
+.side-toggle-ico--off { opacity: 1; }
+.side-toggle-ico--on { opacity: 0; }
+
+@media (min-width: 901px) {
+  /* 用 flex + 显式 width 过渡，比过渡 grid-template-columns 稳：收起时主内容
+     立刻补位，不会在左边留一条空带。 */
+  .shell {
+    display: flex;
+    --side-w: var(--side-full);
+  }
+  html.side-rail .shell { --side-w: var(--side-rail-w); }
+  /* 只改尺寸：底色、渐变、光晕、描边、投影、文字色全部走改版前的 .sidebar */
+  .shell > .sidebar {
+    flex: 0 0 auto;
+    width: var(--side-w);
+    height: 100vh;
+    height: 100dvh;
+    gap: 0;
+    padding: 0;
+    transition: width var(--side-dur) var(--side-ease);
+  }
+  .shell > .main { flex: 1 1 auto; min-width: 0; }
+
+  /* 展开态：头部恢复改版前原样（logo + 项目名 / 当前家庭）；
+     收起态：只留品牌 logo。两态都用同一个对齐方式，不做硬切。 */
+  .side-top {
+    flex: 0 0 62px;
+    height: 62px;
+    padding: 0 18px;
+    gap: 11px;
+    justify-content: flex-start;
+    border-bottom: 0;
+    transition:
+      padding var(--side-dur) var(--side-ease),
+      gap var(--side-dur) var(--side-ease);
+  }
+  .side-top--strip { gap: 9px; }
+  /* logo 落在 (64-34)/2 = 15px 处正好居中；18→15px 几乎无感，
+     比 justify-content 从 flex-start 跳到 center 平滑得多 */
+  html.side-rail .side-top { padding: 0 0 0 15px; gap: 0; }
+
+  .side-nav {
+    flex: 1 1 auto;
+    gap: 2px;
+    padding: 8px 10px 14px;
+  }
+
+  /* 行：保留 40px 行高与 8px 圆角；颜色 / 悬停 / 选中 / 滑块全交给改版前的规则。
+     justify-content 两态都取 center：展开时 .tab-label 的 flex:1 会吃满剩余空间，
+     所以看起来仍是「图标靠左、文字铺开」；收起后只剩图标，自然居中，全程无跳变。 */
+  .side-nav .nav-item,
+  .side-nav .tab {
+    position: relative;
+    flex: 0 0 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    width: 100%;
+    height: 40px;
+    padding: 0 12px;
+    border-radius: 8px;
+    font-size: 13.4px;
+    font-weight: 500;
+    letter-spacing: 0;
+    transition:
+      color 0.22s var(--ease),
+      background 0.22s var(--ease),
+      padding var(--side-dur) var(--side-ease),
+      gap var(--side-dur) var(--side-ease);
+  }
+  /* 选中项左侧发光竖条回到改版前；内边距 12→10px，竖条跟着对齐。
+     滑块宽度直接跟 --side-w 走，和侧栏同一条曲线补间，不再逐帧用 JS 追。 */
+  .side-nav .nav-glider {
+    width: calc(var(--side-w) - 21px) !important;
+    border-radius: 8px;
+    transition:
+      width var(--side-dur) var(--side-ease),
+      transform 0.38s var(--ease),
+      height var(--side-dur) var(--side-ease),
+      opacity 0.2s var(--ease);
+  }
+  .side-nav .nav-glider::after,
+  .side-nav .nav-item.active::after { left: -10px; }
+  .side-nav .nav-item .ico { flex: 0 0 18px; width: 18px; height: 18px; }
+
+  /* 展开（基准态）：文字延后一点淡入，宽度已经就位才露脸，不会被逐字裁切 */
+  .tab-label, .nav-label, .nav-count,
+  .side-top .side-titles, .side-top .side-strip {
+    opacity: 1;
+    transform: none;
+    overflow: hidden;
+    transition:
+      opacity 0.16s ease 0.12s,
+      transform 0.28s var(--side-ease) 0.06s,
+      max-width var(--side-dur) var(--side-ease),
+      padding var(--side-dur) var(--side-ease),
+      margin var(--side-dur) var(--side-ease);
+  }
+  .tab-label, .nav-label {
+    flex: 1 1 auto;
+    min-width: 0;
+    max-width: 200px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+  .nav-count { flex: 0 0 auto; max-width: 80px; font-size: 11px; }
+  .side-top .side-titles, .side-top .side-strip { max-width: 100%; }
+
+  /* 底部：唯一保留的分割线 + 模式切换按钮。
+     竖线靠左 = 浅色圆角按钮底 + 亮描边（参考图 1，手动宽边 / 固定展开）；
+     竖线靠右 = 无按钮底 + 灰描边（参考图 2，手动窄边 / 自动悬停）。
+     两态只跟 side-icon-right 走；动画使能时 hover 只改宽度、不改这个 class，
+     所以补间全程图标与底色都不动。
+     z-index 让它盖过 .sidebar::after 的底部渐隐，图标始终清楚。 */
+  .side-foot {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    /* 两态都保持 flex-start：以前收起态硬切到 justify-content:center，
+       这个属性不能过渡，配合宽度动画就会让按钮在半途「跳」一下。
+       改成只补间 padding-left（14px → 16px，(72-40)/2 正好居中），
+       按钮全程连续平移，图标不再抖。 */
+    justify-content: flex-start;
+    padding: 8px 14px 10px;
+    border-top: 1px solid var(--side-line);
+    transition: padding var(--side-dur) var(--side-ease);
+  }
+  .side-toggle {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border: 0;
+    border-radius: 10px;
+    background: var(--side-hover);
+    color: var(--side-strong);
+    cursor: pointer;
+    /* 图标 / 底色切换延后到宽度补间末段再发生：侧栏先缩回去、图标保持旧态，
+       缩完才换竖线方向，避免「一边缩一边变」造成的突兀（hover 路径本就不换，
+       这里只影响点击触发的宽窄切换）。reduced-motion 下被统一置 none，瞬切可接受。 */
+    transition: background 0.22s ease 0.14s, color 0.22s ease 0.14s;
+  }
+  .side-toggle .ico {
+    width: 18px;
+    height: 18px;
+    transition: opacity 0.22s var(--ease) 0.14s;
+  }
+  /* 第二枚绝对定位叠在第一枚上，两态只换透明度，位置纹丝不动。
+     驱动 class 是 side-icon-right（由底部脚本按「模式」算出），不是 side-rail：
+     动画使能时鼠标移入展开 / 移出收回只改宽度，不改这个 class，
+     于是整段补间里图标与按钮底色都不动 ——「动画期间图标不变」。 */
+  .side-toggle-ico--on { position: absolute; inset: 0; margin: auto; }
+  html.side-icon-right .side-toggle-ico--off { opacity: 0; }
+  html.side-icon-right .side-toggle-ico--on { opacity: 1; }
+  /* 竖线靠左 = 浅色圆角按钮底 + 亮描边（手动宽边 / 固定展开）；
+     竖线靠右 = 透明底 + 灰描边（手动窄边 / 自动悬停）。 */
+  html.side-icon-right .side-toggle { background: transparent; color: var(--side-muted); }
+  .side-toggle:hover { color: var(--side-strong); }
+  html.side-icon-right .side-toggle:hover { background: var(--side-hover); }
+  .side-toggle:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+  /* ---------- 收起态：文字先淡出再收宽，图标随留白归零自然居中 ---------- */
+  html.side-rail .side-nav .nav-item,
+  html.side-rail .side-nav .tab { gap: 0; padding: 0; }
+  html.side-rail .tab-label,
+  html.side-rail .nav-label,
+  html.side-rail .nav-count,
+  html.side-rail .side-top .side-titles,
+  html.side-rail .side-top .side-strip {
+    /* 关键：保留基准态的 flex: 1 1 auto，只把 max-width 收到 0、opacity 收到 0。
+       基准态 .tab-label 的 max-width 是具体值（200px），所以 200px → 0 是「长度→长度」
+       可以逐帧插值；若改成 flex: 0 0 0，flex-basis 会从 auto 瞬变到 0（flex-basis 不在
+       过渡列表里），标签整块在一个帧里啪地塌掉，图标被推着「跳」一下而非平滑右移居中。
+       去掉 translateX，纯靠宽度 + 透明度同 0.3s 同曲线连续过渡。 */
+    min-width: 0;
+    max-width: 0;
+    margin: 0;
+    padding: 0;
+    opacity: 0;
+    transition:
+      max-width var(--side-dur) var(--side-ease),
+      opacity var(--side-dur) var(--side-ease),
+      padding var(--side-dur) var(--side-ease),
+      margin var(--side-dur) var(--side-ease);
+  }
+  html.side-rail .side-top .side-strip { border: 0; box-shadow: none; }
+  html.side-rail .side-foot { padding: 8px 0 10px 12px; }
+}
+
+/* 移动端：底部横条里不出现底部开关，页签文字沿用原来的 10px 居中样式 */
+@media (max-width: 900px) {
+  .tab-label {
+    display: block;
+    max-width: 100%;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .side-foot { display: none !important; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shell > .sidebar,
+  .shell .side-nav .nav-glider,
+  .side-top, .side-top .side-titles, .side-top .side-strip,
+  .side-nav .nav-item, .side-nav .tab,
+  .tab-label, .nav-label, .nav-count,
+  .side-foot, .side-toggle, .side-toggle .ico { transition: none !important; }
+}
+
+/* ==========================================================================
+   设置弹窗：圆角色卡 + 侧边栏动画开关
+   ========================================================================== */
+.settings-card { max-width: 470px; }
+/* 设置卡片是纯配置面板，不参与通用卡片的「跟手光斑 / 悬停流光边 / 外辉光」。
+   ::after 是那团跟随指针的径向光，直接不渲染；hover 与触屏 .fx-active 都复位成常态，
+   写在文件末尾以盖过前面 .modal-card 的同名规则（选择器权重相同、后来者生效）。 */
+.settings-card::after { display: none; }
+.settings-card:hover,
+.settings-card.fx-active {
+  --card-ring: var(--ring-idle);
+  box-shadow: 0 46px 90px -34px rgba(6, 9, 20, 0.72), 0 0 0 1px rgba(255, 255, 255, 0.04);
+  animation-play-state: running, paused;
+}
+.settings-block {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.settings-block-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.settings-block-head h4 {
+  font-size: 13.5px;
+  font-weight: 650;
+  color: var(--text);
+}
+.settings-block-head span { font-size: 12px; color: var(--muted); }
+.settings-block-head b { color: var(--brand-ink); font-weight: 650; }
+
+.accent-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+.accent-swatch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+/* 圆角色卡本体：每张卡是一段同色系渐变，颜色由 app.js 写进行内 --sw-from / --sw-to */
+.accent-tile {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  /* 连续曲率圆角（squircle）：普通 border-radius 在「边→弧」交界曲率会突变，
+     看着发硬；superellipse 让角部曲率连续过渡，更自然。不支持的浏览器
+     忽略 corner-shape，回退到下面这枚更柔的 16px 圆角。 */
+  border-radius: 16px;
+  corner-shape: superellipse;
+  background: linear-gradient(140deg, var(--sw-from), var(--sw-to));
+  box-shadow: 0 6px 16px -10px rgba(6, 9, 20, 0.6), inset 0 0 0 1px rgba(255, 255, 255, 0.16);
+  transition: transform 0.2s var(--ease), box-shadow 0.2s var(--ease);
+}
+.accent-swatch:hover .accent-tile { transform: translateY(-2px); }
+/* 选中只靠卡片左上角一枚小实心圆标识，不额外加外边框 / 描边 */
+.accent-swatch[aria-checked="true"] .accent-tile::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 1px rgba(6, 9, 20, 0.18), 0 1px 3px rgba(6, 9, 20, 0.3);
+}
+.accent-swatch[aria-checked="true"] .accent-name { color: var(--text); font-weight: 650; }
+.accent-name {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.accent-swatch:focus-visible { outline: none; }
+.accent-swatch:focus-visible .accent-tile {
+  box-shadow: 0 0 0 2px var(--surface), 0 0 0 4px var(--brand-line);
+}
+
+/* 动画使能开关：整行可点，原生 checkbox 只留可访问性，外观交给后面的 track */
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 4px 0 6px;
+  cursor: pointer;
+}
+.settings-row-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.settings-row-text b { font-size: 13.5px; font-weight: 650; color: var(--text); }
+.settings-row-text small { font-size: 11.8px; line-height: 1.6; color: var(--muted); }
+.switch-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+.switch-track {
+  position: relative;
+  flex: 0 0 auto;
+  width: 44px;
+  height: 25px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface-3);
+  transition: background 0.22s var(--ease), border-color 0.22s var(--ease);
+}
+.switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 2px 5px rgba(6, 9, 20, 0.3);
+  transition: transform 0.22s var(--ease-spring);
+}
+.switch-input:checked + .switch-track { background: var(--brand); border-color: var(--brand); }
+.switch-input:checked + .switch-track .switch-knob { transform: translateX(19px); }
+.switch-input:focus-visible + .switch-track { outline: 2px solid var(--brand-line); outline-offset: 2px; }
+
+@media (max-width: 520px) {
+  .accent-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+  .settings-row { gap: 10px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .accent-tile, .switch-track, .switch-knob { transition: none !important; }
 }

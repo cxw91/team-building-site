@@ -186,6 +186,97 @@ document.addEventListener("click", (e) => {
   if (e.target instanceof Element && e.target.closest('[data-action="toggle-theme"]')) toggleTheme();
 });
 
+/* ---------- 设置：强调色 + 侧边栏动画 ----------
+   两项都是纯前端偏好，只落 html 属性 / class 与 localStorage，不请求后端。
+   <head> 里的引导脚本会在样式表加载前先还原，避免刷新时闪一下默认色 / 默认宽边。
+   强调色以「一个 RGB 三元组 + 一条渐变」的形式喂给 style.css，整套品牌令牌由 CSS 统一推导；
+   第一个色卡 violet 就是改版前一直在用的品牌紫，不做任何覆盖。 */
+const ACCENTS = [
+  { id: "violet", name: "星云紫", from: "#8b7cff", to: "#5b4be0" },
+  { id: "ocean",  name: "海洋蓝", from: "#66a3ff", to: "#2a63c8" },
+  { id: "teal",   name: "青碧",   from: "#35d6e6", to: "#0a8fa5" },
+  { id: "forest", name: "松绿",   from: "#4fd6a0", to: "#0f8a5c" },
+  { id: "amber",  name: "暖橙",   from: "#ffb355", to: "#b7650a" },
+  { id: "rose",   name: "玫瑰",   from: "#ff7aa6", to: "#c02a63" },
+];
+const ACCENT_KEY = "tb_accent";
+const SIDE_ANIM_KEY = "tb_sidebar_anim";
+
+function currentAccent() {
+  const id = document.documentElement.getAttribute("data-accent");
+  return ACCENTS.some((a) => a.id === id) ? id : "violet";
+}
+function renderAccentGrid() {
+  $("#accentGrid").innerHTML = ACCENTS.map(
+    (a) =>
+      `<button class="accent-swatch" type="button" role="radio" aria-checked="false" tabindex="-1"` +
+      ` data-accent="${a.id}" title="${esc(a.name)}" aria-label="${esc(a.name)}"` +
+      ` style="--sw-from:${a.from};--sw-to:${a.to}">` +
+      `<span class="accent-tile" aria-hidden="true"></span>` +
+      `<span class="accent-name">${esc(a.name)}</span>` +
+      `</button>`
+  ).join("");
+}
+function paintAccentSelection() {
+  const cur = currentAccent();
+  $("#accentGrid").querySelectorAll(".accent-swatch").forEach((b) => {
+    const on = b.dataset.accent === cur;
+    b.setAttribute("aria-checked", on ? "true" : "false");
+    b.tabIndex = on ? 0 : -1;
+  });
+  const hit = ACCENTS.find((a) => a.id === cur);
+  $("#accentName").textContent = hit ? hit.name : "默认";
+}
+function applyAccent(id) {
+  const next = ACCENTS.some((a) => a.id === id) ? id : "violet";
+  document.documentElement.setAttribute("data-accent", next);
+  try { localStorage.setItem(ACCENT_KEY, next); } catch (e) {}
+  paintAccentSelection();
+}
+function openSettings() {
+  paintAccentSelection();
+  $("#sideAnimToggle").checked = document.documentElement.classList.contains("side-auto");
+  setModalOpen($("#settingsModal"), true);
+}
+function closeSettings() {
+  setModalOpen($("#settingsModal"), false);
+}
+
+renderAccentGrid();
+paintAccentSelection();
+$("#accentGrid").addEventListener("click", (e) => {
+  const btn = e.target.closest(".accent-swatch");
+  if (btn) applyAccent(btn.dataset.accent);
+});
+// 色卡是 radiogroup：左右 / 上下方向键在色卡间移动并即时生效
+$("#accentGrid").addEventListener("keydown", (e) => {
+  if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+  const list = [...$("#accentGrid").querySelectorAll(".accent-swatch")];
+  const i = list.indexOf(document.activeElement);
+  if (i < 0) return;
+  e.preventDefault();
+  const step = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : -1;
+  const next = list[(i + step + list.length) % list.length];
+  next.focus();
+  applyAccent(next.dataset.accent);
+});
+$("#sideAnimToggle").addEventListener("change", (e) => {
+  const on = e.currentTarget.checked;
+  // 侧栏交互脚本在 index.html 末尾，页面加载完成后它一定已经挂好；留个兜底防时序意外
+  if (typeof window.setSideAnim === "function") window.setSideAnim(on);
+  else {
+    document.documentElement.classList.toggle("side-auto", on);
+    try { localStorage.setItem(SIDE_ANIM_KEY, on ? "1" : "0"); } catch (err) {}
+  }
+});
+$("#settingsCloseBtn").addEventListener("click", closeSettings);
+$("#settingsModal").addEventListener("click", (e) => {
+  if (e.target === $("#settingsModal")) closeSettings(); // 点遮罩关闭
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("#settingsModal").classList.contains("hidden")) closeSettings();
+});
+
 // ---------- 接口封装 ----------
 async function api(path, { method = "GET", body, withProject = true, adminPw, signal, timeoutMs } = {}) {
   const headers = { "content-type": "application/json" };
@@ -1210,13 +1301,20 @@ function renderChrome() {
     glider.setAttribute("aria-hidden", "true");
     glider.dataset.fresh = "1"; // 首次落位不做动画，免得从左上角飞出来
   }
+  // 页签整体重建；高亮滑块（.nav-glider）保持同一个节点不动。
+  // 文字包进 .tab-label：收起态要整块隐藏；title / aria-label 让纯图标条仍可辨认。
   nav.querySelectorAll(".tab").forEach((btn) => btn.remove());
   nav.insertAdjacentHTML(
     "beforeend",
-    TABS.map(
-      (t) =>
-        `<button class="tab${t.key === state.tab ? " active" : ""}" data-tab="${t.key}">${t.label}</button>`
-    ).join("")
+    TABS.map((t) => {
+      const on = t.key === state.tab;
+      return (
+        `<button class="tab${on ? " active" : ""}" data-tab="${t.key}"` +
+        ` title="${esc(t.label)}" aria-label="${esc(t.label)}"${on ? ' aria-current="page"' : ""}>` +
+        `<span class="tab-label">${esc(t.label)}</span>` +
+        "</button>"
+      );
+    }).join("")
   );
   nav.insertBefore(glider, nav.firstChild);
   nav.classList.add("has-glider");
@@ -3930,8 +4028,15 @@ $("#topMenuBtn").addEventListener("click", (e) => {
   if (swBtn0) swBtn0.setAttribute("aria-expanded", "false");
 });
 
-// 菜单内的点击委托：切换家庭 / 项目中心 / 退出
+// 菜单内的点击委托：切换家庭 / 设置 / 项目中心 / 退出
 $("#topMenu").addEventListener("click", (e) => {
+  // 「设置」：先收下拉再开弹窗，避免 #appView 隐藏后 aria-expanded 还停在 true
+  const st = e.target.closest("[data-action='open-settings']");
+  if (st) {
+    closeTopMenu();
+    openSettings();
+    return;
+  }
   // 点「切换家庭」：展开 / 收起家庭名单子菜单（不关闭整个下拉）
   const sw = e.target.closest("[data-action='switch-family']");
   if (sw) {

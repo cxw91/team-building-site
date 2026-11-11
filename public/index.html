@@ -18,6 +18,31 @@
       }
       document.documentElement.setAttribute("data-theme", t);
     })();
+    /* 设置项引导：同样要在样式表加载前落到 html 上，否则刷新时会先闪一下默认的
+       品牌紫 / 248px 宽边，再「啪」地跳成用户选过的强调色与窄边。
+         data-accent     强调色（默认 violet，即改版前的品牌紫）
+         side-auto       侧边栏动画已使能，由「设置」弹窗控制，默认关闭
+         side-rail       当前窄边；动画使能时刷新恒从窄边起步，手动模式才读上次存的宽窄
+         side-icon-right 底部按钮显示「竖线靠右」那枚图标（= 自动悬停态 / 手动窄边），
+                         由底部脚本按当前模式算；提前预置避免刷新时图标闪一下 */
+    (function () {
+      var allowed = ["violet", "ocean", "teal", "forest", "amber", "rose"];
+      var ac = null, anim = null, oldAuto = null, rail = null;
+      try {
+        ac = localStorage.getItem("tb_accent");
+        anim = localStorage.getItem("tb_sidebar_anim");
+        oldAuto = localStorage.getItem("tb_sidebar_auto");
+        rail = localStorage.getItem("tb_sidebar_rail");
+      } catch (e) {}
+      if (allowed.indexOf(ac) < 0) ac = "violet";
+      document.documentElement.setAttribute("data-accent", ac);
+      /* 老版本用 tb_sidebar_auto 存「自动悬停」；没写过新 key 时沿用一次，避免升级后丢失偏好 */
+      var animOn = anim === null ? oldAuto === "1" : anim === "1";
+      /* 动画使能时刷新恒从「自动悬停窄边」起步：竖线靠右。
+         手动模式则按存下来的宽窄决定：窄边竖线右、宽边竖线左。 */
+      if (animOn) document.documentElement.classList.add("side-auto", "side-rail", "side-icon-right");
+      else if (rail === "1") document.documentElement.classList.add("side-rail", "side-icon-right");
+    })();
   </script>
   <link rel="stylesheet" href="/style.css" />
 </head>
@@ -78,6 +103,22 @@
       <symbol id="icon-menu" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
         <path d="M4 7h16M4 12h16M4 17h16" />
       </symbol>
+      <!-- 汉堡菜单里的「设置」入口 -->
+      <symbol id="icon-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3.2" />
+        <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 1.56V21a2 2 0 0 1-4 0v-.04A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.56-1H3a2 2 0 0 1 0-4h.04A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.56V3a2 2 0 0 1 4 0v.04A1.7 1.7 0 0 0 15 4.6a1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9a1.7 1.7 0 0 0 1.56 1H21a2 2 0 0 1 0 4h-.04A1.7 1.7 0 0 0 19.4 15Z" />
+      </symbol>
+      <!-- 底部「自动收起」开关的两态图标：圆角矩形描边 + 上下内缩的一根短竖线。
+           未使能 = 竖线靠左（配浅色圆角按钮底、亮描边）；
+           使能   = 竖线靠右（无按钮底、灰描边）。 -->
+      <symbol id="icon-panel-left" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3.4" y="4" width="17.2" height="16" rx="3" />
+        <path d="M7.8 7.6v8.8" />
+      </symbol>
+      <symbol id="icon-panel-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="3.4" y="4" width="17.2" height="16" rx="3" />
+        <path d="M16 7.6v8.8" />
+      </symbol>
       <!-- 顶栏「刷新」：手动要一次最新数据，不依赖 30 秒版本探针的节奏 -->
       <!-- 箭头方向改为逆时针：对整组路径做水平镜像即可，比手写镜像 path 稳妥
            （arc 的 sweep-flag 与相对坐标容易算错）。只翻静态图标，点击时的转圈
@@ -131,6 +172,8 @@
   <!-- 项目中心：新建 / 历史项目 -->
   <section id="homeView" class="view hidden shell">
     <aside class="sidebar">
+      <!-- 桌面展开态沿用改版前的「logo + 两行标题」；收起态只留 logo 并居中。
+           ≤900px 的固定顶栏也仍用 .side-titles，所以节点一直保留在 DOM 里。 -->
       <div class="side-top">
         <div class="brand-mark sm" aria-hidden="true"><svg class="brand-icon" aria-hidden="true" focusable="false"><use href="#icon-brand"></use></svg></div>
         <div class="side-titles">
@@ -139,12 +182,18 @@
         </div>
       </div>
       <nav class="side-nav" aria-label="主导航">
-        <span class="nav-item active" aria-current="page">
+        <span class="nav-item active" aria-current="page" aria-label="我的项目" title="我的项目">
           <svg class="ico" aria-hidden="true"><use href="#icon-grid"></use></svg>
           <span class="nav-label">我的项目</span>
           <span class="nav-count" id="projCount"></span>
         </span>
       </nav>
+      <div class="side-foot">
+        <button class="side-toggle" type="button" aria-pressed="false" title="切换侧边栏宽窄" aria-label="切换侧边栏宽窄">
+          <svg class="ico side-toggle-ico--off" aria-hidden="true"><use href="#icon-panel-left"></use></svg>
+          <svg class="ico side-toggle-ico--on" aria-hidden="true"><use href="#icon-panel-right"></use></svg>
+        </button>
+      </div>
     </aside>
     <div class="main">
       <!-- 项目中心也用和项目内完全一样的顶栏：右上角按钮的横向位置一致，
@@ -244,7 +293,15 @@
           <span class="side-strip__who" id="whoami" title="当前家庭" aria-label="当前家庭"></span>
         </div>
       </div>
+      <!-- 页签由 app.js 的 renderChrome() 整体重建；
+           导航高亮滑块（.nav-glider）是唯一被保留的节点。 -->
       <nav id="tabs" class="side-nav" aria-label="页面导航"></nav>
+      <div class="side-foot">
+        <button class="side-toggle" type="button" aria-pressed="false" title="切换侧边栏宽窄" aria-label="切换侧边栏宽窄">
+          <svg class="ico side-toggle-ico--off" aria-hidden="true"><use href="#icon-panel-left"></use></svg>
+          <svg class="ico side-toggle-ico--on" aria-hidden="true"><use href="#icon-panel-right"></use></svg>
+        </button>
+      </div>
     </aside>
     <div class="main">
       <header class="topbar">
@@ -270,6 +327,10 @@
               <svg class="ico caret" aria-hidden="true"><use href="#icon-chevron"></use></svg>
             </button>
             <div id="topMenuFamilyList" class="top-menu-sub hidden"></div>
+            <!-- 设置：强调色 + 侧边栏动画，纯前端偏好，弹窗见 #settingsModal -->
+            <button class="top-menu-item" data-action="open-settings" role="menuitem">
+              <svg class="ico" aria-hidden="true"><use href="#icon-settings"></use></svg><span>设置</span>
+            </button>
             <div class="top-menu-sep"></div>
             <!-- 项目中心：从顶栏收进菜单，位置固定在「退出」正上方 -->
             <button class="top-menu-item" data-action="go-home" role="menuitem">
@@ -315,6 +376,38 @@
       <div class="modal-actions">
         <button id="confirmCancelBtn" class="ghost">取消</button>
         <button id="confirmOkBtn" class="primary danger">确定删除</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 设置弹窗：强调色色卡 + 侧边栏动画使能。从右上角汉堡菜单进入。
+       两项都是纯前端偏好，写 localStorage，由 <head> 引导脚本在样式表加载前还原。 -->
+  <div id="settingsModal" class="modal hidden">
+    <div class="modal-card settings-card" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
+      <h3 class="modal-title" id="settingsTitle">设置</h3>
+      <p class="modal-desc">偏好只保存在当前浏览器，换设备或清除缓存后会回到默认。</p>
+
+      <section class="settings-block">
+        <div class="settings-block-head">
+          <h4>主题强调色</h4>
+          <span>当前：<b id="accentName">星云紫</b></span>
+        </div>
+        <!-- 色卡由 app.js 的 ACCENTS 渲染；第一个就是改版前一直用的品牌紫 -->
+        <div id="accentGrid" class="accent-grid" role="radiogroup" aria-label="主题强调色"></div>
+      </section>
+
+      <section class="settings-block">
+        <label class="settings-row" for="sideAnimToggle">
+          <span class="settings-row-text">
+            <b>侧边栏动画</b>
+          </span>
+          <input id="sideAnimToggle" class="switch-input" type="checkbox" role="switch" aria-label="侧边栏动画使能" />
+          <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
+        </label>
+      </section>
+
+      <div class="modal-actions">
+        <button id="settingsCloseBtn" class="ghost">完成</button>
       </div>
     </div>
   </div>
@@ -382,7 +475,8 @@
           var d = down; down = null;
           if (d.moved) return;
           var el = d.t && d.t.closest ? d.t.closest(CARDS) : null;
-          if (el && el.classList.contains("readonly")) el = null;  // 只读卡不参与光效
+          // 只读卡不参与光效；设置弹窗也不需要鼠标聚光 / 点亮态
+          if (el && (el.classList.contains("readonly") || el.classList.contains("settings-card"))) el = null;
           setActive(el);                       // 点在卡片外 = 取消所有激活
         }, { passive: true });
         document.addEventListener("pointercancel", function () { down = null; }, { passive: true });
@@ -418,7 +512,7 @@
         var el = document.elementFromPoint(last.x, last.y);
         if (!el || !el.closest) return;
         el = el.closest(SEL);
-        if (!el) return;
+        if (!el || el.classList.contains("settings-card")) return; // 设置弹窗不写指针光斑坐标
         var r = el.getBoundingClientRect();
         el.style.setProperty("--mx", Math.round(last.x - r.left) + "px");
         el.style.setProperty("--my", Math.round(last.y - r.top) + "px");
@@ -455,11 +549,16 @@
       function sync() {
         var a = tabs.querySelector(".tab.active");
         if (!a) return;
-        var t = "";
-        for (var i = 0; i < a.childNodes.length; i++) {
-          if (a.childNodes[i].nodeType === 3) t += a.childNodes[i].nodeValue;
+        /* 页签文字现在包在 .tab-label 里（收起态要整块隐藏），直接读文本节点会读到空串；
+           保留原来的遍历作为旧结构兜底。 */
+        var lab = a.querySelector(".tab-label");
+        var t = lab ? (lab.textContent || "").trim() : "";
+        if (!t) {
+          for (var i = 0; i < a.childNodes.length; i++) {
+            if (a.childNodes[i].nodeType === 3) t += a.childNodes[i].nodeValue;
+          }
+          t = (t || "").trim();
         }
-        t = (t || "").trim();
         if (t && title.textContent !== t) title.textContent = t;
       }
       new MutationObserver(sync).observe(tabs, {
@@ -469,6 +568,137 @@
         attributeFilter: ["class"],
       });
       sync();
+    })();
+
+    /* 侧栏宽窄 + 自动悬停动画。
+       html 上的 class：
+         side-auto       动画已使能（「设置」弹窗控制，默认关闭，存 tb_sidebar_anim）
+         side-rail       当前窄边（手动模式存 tb_sidebar_rail）
+         side-icon-right 底部按钮显示「竖线靠右」那枚图标，由 syncButtons() 算出
+       宽度补间全部交给 CSS。底部按钮的图标表达的是「模式」，不是实时宽度：
+         动画关闭：点一下只手动切宽 / 窄，鼠标移动完全不触发；图标跟宽窄走
+                   （窄边竖线右、宽边竖线左）。
+         动画开启：默认「自动悬停」= 竖线右（窄边，鼠标移入缓动展开、移出缓动收回）；
+                   点一下切成「固定展开」= 竖线左（宽边，不需要鼠标动画，移出也不收回）；
+                   再点一下回到「自动悬停」= 竖线右，并恢复鼠标动画。
+                   ★ 动画使能时图标只跟模式走，hover 引起的展开 / 收回（含补间过程）
+                     都不改图标 —— 这就是「动画期间图标不变」。
+       pinned 只在动画开启时有意义，是内存态、不写盘：刷新一律回到自动悬停窄边起步。 */
+    (function () {
+      var root = document.documentElement;
+      var ANIM_KEY = "tb_sidebar_anim";
+      var RAIL_KEY = "tb_sidebar_rail";
+      var canHover = !!(window.matchMedia &&
+        window.matchMedia("(hover: hover) and (pointer: fine)").matches);
+      var auto = root.classList.contains("side-auto");
+      var pinned = false; // 动画开启时「固定展开、不随鼠标收回」
+      var leaveTimer = 0;
+
+      /* 不另存一个「鼠标是否在侧栏内」的标记：视图切换时旧侧栏被 display:none，
+         pointerleave 可能不触发，标记就会烂在那里。直接问浏览器最准。 */
+      function pointerInside() {
+        var sides = document.querySelectorAll(".shell > .sidebar");
+        for (var i = 0; i < sides.length; i++) {
+          if (sides[i].offsetParent !== null && sides[i].matches(":hover")) return true;
+        }
+        return false;
+      }
+
+      /* 高亮滑块的宽度现在由 CSS 的 calc(var(--side-w) - 21px) 驱动，和侧栏宽度
+         走同一条缓动曲线。以前靠 rAF 每帧读 offsetWidth + 强制重排去追，
+         那正是展开/收回发顿的主要来源；这里只在动画结束后对一次坐标。 */
+      function setRail(on, persist) {
+        var next = !!on;
+        if (root.classList.contains("side-rail") !== next) {
+          root.classList.toggle("side-rail", next);
+        }
+        /* 只持久化手动按钮切出来的宽窄；动画模式下 hover 每次进出都写盘的话，
+           刷新时就会停在「鼠标恰好悬在侧栏里」的展开态，而不是从窄边起步。 */
+        if (persist && !auto) {
+          try { localStorage.setItem(RAIL_KEY, next ? "1" : "0"); } catch (e) {}
+        }
+        syncButtons();
+      }
+      function syncButtons() {
+        var narrow = root.classList.contains("side-rail");
+        /* 图标语义：动画关闭时跟实时宽窄；动画开启时只跟「自动 / 固定展开」这个模式，
+           与 side-rail 脱钩，所以 hover 展开 / 收回的整段动画里图标都不动。 */
+        var iconRight = auto ? !pinned : narrow;
+        root.classList.toggle("side-icon-right", iconRight);
+        var label;
+        if (!auto) label = narrow ? "展开侧边栏（宽边）" : "收起侧边栏（窄边）";
+        else if (pinned) label = "使能鼠标侧边栏动画（收回窄边，鼠标移入展开）";
+        else label = "固定展开侧边栏（不随鼠标收回）";
+        var all = document.querySelectorAll(".side-toggle");
+        for (var i = 0; i < all.length; i++) {
+          all[i].setAttribute("aria-pressed", iconRight ? "true" : "false");
+          all[i].setAttribute("aria-label", label);
+          all[i].title = label;
+        }
+      }
+      /* 供「设置」弹窗里的开关调用。切换动画时一律清掉「固定展开」，
+         让两种模式都从一个明确的初态开始。 */
+      function setAuto(on) {
+        clearTimeout(leaveTimer);
+        auto = !!on;
+        pinned = false;
+        root.classList.toggle("side-auto", auto);
+        try { localStorage.setItem(ANIM_KEY, auto ? "1" : "0"); } catch (e) {}
+        /* 开启：指针在侧栏内就先保持展开，等移出再收；否则立刻收成窄边。
+           关闭：保留眼前这一刻的宽窄并写盘，刷新后原样恢复。 */
+        if (auto) setRail(!pointerInside(), false);
+        else setRail(root.classList.contains("side-rail"), true);
+        syncButtons();
+      }
+      window.setSideAnim = setAuto;
+
+      document.addEventListener("click", function (e) {
+        var b = e.target && e.target.closest ? e.target.closest(".side-toggle") : null;
+        if (!b) return;
+        clearTimeout(leaveTimer);
+        if (!auto) {
+          /* 动画关闭：纯手动宽窄，鼠标移动不参与，状态写盘 */
+          setRail(!root.classList.contains("side-rail"), true);
+          return;
+        }
+        /* 动画开启：按钮在「自动悬停（竖线右）」与「固定展开（竖线左）」之间切换。
+           指针移进按钮时 pointerenter 会先把侧栏展开，所以这里不能只看当前 rail ——
+           按「是否处于固定展开」判定，才和用户看到的图标语义一致。
+           图标在这一次点击里换到位，随后 hover 展开 / 收回的整段动画都不再动它。 */
+        if (pinned) {
+          pinned = false;
+          setRail(true, false);   // 竖线右：收回窄边，恢复鼠标移入展开 / 移出收回
+        } else {
+          pinned = true;
+          setRail(false, false);  // 竖线左：固定展开，鼠标移出也不收回
+        }
+        syncButtons();
+      });
+
+      if (canHover) {
+        var sides = document.querySelectorAll(".shell > .sidebar");
+        for (var j = 0; j < sides.length; j++) {
+          sides[j].addEventListener("pointerenter", function (e) {
+            if (e.pointerType !== "mouse" || !auto) return;
+            clearTimeout(leaveTimer);
+            setRail(false, false);
+          });
+          sides[j].addEventListener("pointerleave", function (e) {
+            /* 固定展开（pinned）时鼠标移出不收回：这就是「不需要鼠标动画」 */
+            if (e.pointerType !== "mouse" || !auto || pinned) return;
+            clearTimeout(leaveTimer);
+            /* 鼠标移出后稍等一下再收：侧栏是「被动」缩回，立刻收会让人觉得猝不及防；
+               放宽到 180ms 还能吞掉指针擦着边缘进出的短暂停留，避免反复反向打断。 */
+            leaveTimer = setTimeout(function () { setRail(true, false); }, 180);
+          });
+          sides[j].addEventListener("transitionend", function (e) {
+            if (e.propertyName === "width" && typeof window.syncNavGlider === "function") {
+              window.syncNavGlider(false);
+            }
+          });
+        }
+      }
+      syncButtons();
     })();
   </script>
 </body>
