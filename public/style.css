@@ -161,7 +161,10 @@
   --r-md: 13px;
   --r-sm: 10px;
   --ease: cubic-bezier(0.22, 0.61, 0.36, 1);
-  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  /* 入场 / 弹出动画用的缓动：原来是 overshoot 弹簧曲线（1.4 超出 1，结尾回弹），
+     被 impeccable 标记为「bounce easing」—— 回弹感显廉价、过时。改为无回弹的
+     ease-out（结尾干净收住），保留轻快的入场节奏但不弹。 */
+  --ease-pop: cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 html[data-theme="dark"] {
@@ -994,7 +997,7 @@ html[data-theme="dark"] .bg-vignette {
 
 /* 图标随选中「弹」一下：页签是重建的，所以每次切到该项都会播一次，给点击一个落点 */
 .side-nav.has-glider .tab.active::before {
-  animation: tab-icon-pop 0.42s var(--ease-spring);
+  animation: tab-icon-pop 0.42s var(--ease-pop);
 }
 
 @keyframes tab-icon-pop {
@@ -2763,7 +2766,7 @@ html[data-theme="dark"] .pill.done {
   background: var(--grad);
   color: #fff;
   box-shadow: 0 14px 28px -14px rgba(109, 91, 246, 0.9);
-  transition: transform 0.4s var(--ease-spring);
+  transition: transform 0.4s var(--ease-pop);
 }
 
 /* 加号用两条线画出来，不用文字字符「+」：
@@ -3563,7 +3566,7 @@ html.modal-open .bg-aurora * {
     linear-gradient(var(--modal-surface), var(--modal-surface)) padding-box,
     conic-gradient(from var(--ga), var(--card-ring)) border-box;
   box-shadow: 0 46px 90px -34px rgba(6, 9, 20, 0.72), 0 0 0 1px rgba(255, 255, 255, 0.04);
-  animation: pop-in 0.36s var(--ease-spring) both, ring-spin 6s linear infinite;
+  animation: pop-in 0.36s var(--ease-pop) both, ring-spin 6s linear infinite;
   /* pop-in 始终播放；流光默认暂停，悬停才转（多值与 animation 列表一一对应） */
   animation-play-state: running, paused;
   overflow-x: hidden;
@@ -3793,7 +3796,7 @@ html.modal-open .bg-aurora * {
   box-shadow: 0 24px 50px -18px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(109, 91, 246, 0.1);
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
-  animation: toast-in 0.32s var(--ease-spring) both;
+  animation: toast-in 0.32s var(--ease-pop) both;
 }
 
 @keyframes toast-in {
@@ -3876,7 +3879,7 @@ html.modal-open .bg-aurora * {
     conic-gradient(from var(--ga), var(--card-ring)) border-box;
   box-shadow: var(--sh-2);
   text-align: center;
-  animation: pop-in 0.5s var(--ease-spring) both, ring-spin 6s linear infinite;
+  animation: pop-in 0.5s var(--ease-pop) both, ring-spin 6s linear infinite;
   /* pop-in 始终播放；流光默认暂停，悬停才转（多值与 animation 列表一一对应） */
   animation-play-state: running, paused;
 }
@@ -4025,7 +4028,7 @@ html[data-theme="dark"] .panel {
   grid-area: 1 / 1;
   width: 18px;
   height: 18px;
-  transition: opacity 0.32s var(--ease), transform 0.52s var(--ease-spring);
+  transition: opacity 0.32s var(--ease), transform 0.52s var(--ease-pop);
   pointer-events: none;
 }
 
@@ -5080,7 +5083,7 @@ html.side-rail { --side-ease: var(--side-ease-in); }
   gap: 10px;
   margin-bottom: 12px;
 }
-.settings-block-head h4 {
+.settings-block-head h3 {
   font-size: 13.5px;
   font-weight: 650;
   color: var(--text);
@@ -5190,7 +5193,7 @@ html.side-rail { --side-ease: var(--side-ease-in); }
   border-radius: 50%;
   background: #fff;
   box-shadow: 0 2px 5px rgba(6, 9, 20, 0.3);
-  transition: transform 0.22s var(--ease-spring);
+  transition: transform 0.22s var(--ease-pop);
 }
 .switch-input:checked + .switch-track { background: var(--brand); border-color: var(--brand); }
 .switch-input:checked + .switch-track .switch-knob { transform: translateX(19px); }

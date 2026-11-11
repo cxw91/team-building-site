@@ -200,7 +200,7 @@
            切主题、进项目都不会看到按钮「跳一下」。 -->
       <header class="topbar">
         <span class="topbar-dot" aria-hidden="true"></span>
-        <h2 class="topbar-title">项目中心</h2>
+        <div class="topbar-title">项目中心</div>
         <div class="topbar-actions">
           <button id="logoutBtn2" class="top-btn">
             <svg class="ico" aria-hidden="true"><use href="#icon-logout"></use></svg><span class="top-btn-text">退出登录</span>
@@ -214,7 +214,6 @@
       <main class="content home-content">
         <div class="page-head">
           <div class="page-head-main">
-            <p class="eyebrow">Workspace</p>
             <h1 class="page-title">我的团建项目</h1>
             <p class="page-sub">管理项目、家庭、采购与结算</p>
           </div>
@@ -227,7 +226,7 @@
   <!-- 新建团建项目弹窗：从「我的团建项目」里的「+」卡片打开 -->
   <div id="newProjModal" class="modal hidden">
     <div class="modal-card modal-wide">
-      <h3 class="modal-title">新建团建项目</h3>
+      <h2 class="modal-title">新建团建项目</h2>
       <div class="form-row">
         <input id="projName" placeholder="项目名称，例如：2026 秋季团建" autocomplete="off" />
         <input id="projNote" placeholder="备注（可选）：日期 / 地点" autocomplete="off" />
@@ -248,7 +247,7 @@
   <!-- 管理口令弹窗：从登录页的「管理口令」打开 -->
   <div id="pcModal" class="modal hidden">
     <div class="modal-card modal-wide">
-      <h3 class="modal-title">管理口令</h3>
+      <h2 class="modal-title">管理口令</h2>
       <div class="form-row">
         <input id="pcNewPasscode" type="password" name="new-passcode" placeholder="新口令" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore />
         <input id="pcNewAdminPw" type="password" name="new-admin-passcode" placeholder="管理员密码" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore />
@@ -306,7 +305,7 @@
     <div class="main">
       <header class="topbar">
         <span class="topbar-dot" aria-hidden="true"></span>
-        <h2 class="topbar-title" id="pageTitle">概览</h2>
+        <h1 class="topbar-title" id="pageTitle">概览</h1>
         <!-- 右上角操作区：刷新 / 主题 / 汉堡菜单（切换家庭 + 项目中心 + 退出）。
              「项目中心」原先占一个独立按钮，现收进下面的 #topMenu，窄屏顶栏更宽松。 -->
         <div class="topbar-actions">
@@ -349,7 +348,7 @@
   <!-- 管理权限密码弹窗：删除日志 / 清除全部日志 / 结束项目 / 删除项目 / 重启已结束项目时弹出 -->
   <div id="adminModal" class="modal hidden">
     <div class="modal-card">
-      <h3 class="modal-title">需要管理权限</h3>
+      <h2 class="modal-title">需要管理权限</h2>
       <p class="modal-desc" id="adminReason"></p>
       <p class="hint" id="adminHint" style="margin:-8px 0 10px"></p>
       <input id="adminPw" type="password" name="admin-passcode" placeholder="请输入密码" autocomplete="new-password" autocapitalize="off" autocorrect="off" spellcheck="false" data-form-type="other" data-lpignore="true" data-1p-ignore />
@@ -364,7 +363,7 @@
   <!-- 删除确认弹窗（Alert Dialog） -->
   <div id="confirmModal" class="modal hidden">
     <div class="modal-card" tabindex="-1">
-      <h3 class="modal-title" id="confirmTitle">确认删除</h3>
+      <h2 class="modal-title" id="confirmTitle">确认删除</h2>
       <p class="modal-desc" id="confirmDesc"></p>
       <!-- 点「确定删除」后原地切成加载态：等 DELETE + 整页重新取数重画完成才关闭弹窗。
            默认由 CSS 隐藏；is-busy 时标题 / 描述 / 按钮一起让位给这块，按钮同时 disabled。 -->
@@ -384,12 +383,12 @@
        两项都是纯前端偏好，写 localStorage，由 <head> 引导脚本在样式表加载前还原。 -->
   <div id="settingsModal" class="modal hidden">
     <div class="modal-card settings-card" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
-      <h3 class="modal-title" id="settingsTitle">设置</h3>
+      <h2 class="modal-title" id="settingsTitle">设置</h2>
       <p class="modal-desc">偏好只保存在当前浏览器，换设备或清除缓存后会回到默认。</p>
 
       <section class="settings-block">
         <div class="settings-block-head">
-          <h4>主题强调色</h4>
+          <h3>主题强调色</h3>
           <span>当前：<b id="accentName">星云紫</b></span>
         </div>
         <!-- 色卡由 app.js 的 ACCENTS 渲染；第一个就是改版前一直用的品牌紫 -->
