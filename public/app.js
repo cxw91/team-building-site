@@ -4635,3 +4635,254 @@ function watchAutofill() {
     setSessionRestoring(false); // 成功切走、或失败退回登录页，都要还原口令卡片
   }
 })();
+
+/* =====================================================================
+ * 全局气泡提示：把原生 title 提示换成主题化的玻璃气泡。
+ *   - 懒加载：首次扫描 + MutationObserver 兜底动态渲染（#content/#tabs 频繁重建）；
+ *     也监听 title 属性变化（主题切换按钮的文案会动态改写）。
+ *   - 触发：鼠标悬停(pointerover/out) 带 ~400ms 意图延迟 + 160ms 离开宽限（手感对齐原生
+ *     title，避免「一碰就弹/抖动」）；键盘聚焦(focusin/out) 即时反馈，无障碍友好；
+ *     触摸端不主动弹（移动端多靠点击，且气泡会遮挡内容）。
+ *   - 定位：默认在锚点上方，顶部空间不足且下方够放时翻到下方；水平夹在视口内。
+ *   - 显隐闸门：仅当锚点「有文字、但当前被隐藏」才弹——即侧栏收起态 .tab-label
+ *     （max-width:0+opacity:0 只剩图标）需气泡补名字；纯图标按钮（主题 / 菜单 / 刷新 /
+ *     侧栏开关，无文字节点）与文字已可见的元素（宽边页签、带可见标签的按钮）都不弹。
+ *   - 无障碍：转换时仅对「图标型且无 aria-label」的元素把文案写入 aria-label，
+ *     保证图标按钮 / 窄边页签的读屏名称不丢；其余元素不覆盖可见文字。
+ * ===================================================================== */
+(function () {
+  var TIP_ID = "uiTip";
+  var tipEl = null;
+  var anchor = null;
+  var showTimer = 0;          // 悬停意图延迟计时（避免一碰就弹）
+  var hideTimer = 0;          // 离开宽限计时（避免抖动/误收）
+  var SHOW_DELAY = 400;       // 参考原生 title 的系统延迟
+  var HIDE_DELAY = 160;
+
+  function ensureTip() {
+    if (tipEl) return tipEl;
+    tipEl = document.getElementById(TIP_ID);
+    if (tipEl) return tipEl;
+    tipEl = document.createElement("div");
+    tipEl.id = TIP_ID;
+    tipEl.className = "ui-tip";
+    tipEl.setAttribute("role", "tooltip");
+    tipEl.setAttribute("aria-hidden", "true");
+    document.body.appendChild(tipEl);
+    return tipEl;
+  }
+
+  // 把元素上的原生 title 迁到 data-tip，并移除 title（否则系统气泡仍会冒出）。
+  function hydrate(el) {
+    if (!el || el.nodeType !== 1) return;
+    var t = el.getAttribute("title");
+    if (t == null || t.trim() === "") {
+      if (el.dataset.tip === undefined) el.dataset.tip = "";
+      return;
+    }
+    el.dataset.tip = t;
+    el.removeAttribute("title");
+    // 仅图标型控件（无可见文字、非表单输入）补读屏名称；有可见文字的元素保持原样。
+    var hasLabel = el.getAttribute("aria-label") || el.getAttribute("aria-labelledby");
+    var text = (el.textContent || "").trim();
+    if (!hasLabel && text === "" && !/^(input|img|select|textarea)$/i.test(el.tagName)) {
+      el.setAttribute("aria-label", t);
+    }
+  }
+
+  function hydrateRoot(root) {
+    var nodes = root.querySelectorAll("[title]");
+    for (var i = 0; i < nodes.length; i++) hydrate(nodes[i]);
+  }
+
+  function show(el) {
+    var text = el.dataset.tip;
+    if (!text) return;
+    clearTimeout(hideTimer);
+    anchor = el;
+    var tip = ensureTip();
+    tip.textContent = text;
+    tip.classList.add("show");
+    tip.setAttribute("aria-hidden", "false");
+    el.setAttribute("aria-describedby", TIP_ID);
+    place(el);
+    // 下一帧再定位一次：首帧偶尔量到 0 宽 / 文字未换行完，会把气泡当零宽来算 left，
+    // 导致「有时候」箭头偏到一侧；重排后尺寸稳定，坐标即准。
+    if (window.requestAnimationFrame) {
+      requestAnimationFrame(function () { if (anchor === el) place(el); });
+    }
+  }
+
+  function hide() {
+    clearTimeout(showTimer);
+    clearTimeout(hideTimer);
+    if (!tipEl || !anchor) return;
+    tipEl.classList.remove("show");
+    tipEl.setAttribute("aria-hidden", "true");
+    anchor.removeAttribute("aria-describedby");
+    anchor = null;
+  }
+
+  function place(el) {
+    var tip = tipEl;
+    var r = el.getBoundingClientRect();
+    var tw = tip.offsetWidth, th = tip.offsetHeight;
+    if (!tw || !th) return;                    // 首帧尺寸未就绪，等下一帧重排后再算
+    var vw = window.innerWidth, vh = window.innerHeight;
+    var cx = r.left + r.width / 2;          // 锚点中心 x
+    var gap = 8;
+    // 上方放不下、且下方放得下 → 翻到下方
+    var below = (r.top - th - gap < 0) && (r.bottom + th + gap <= vh);
+    var top = below ? r.bottom + gap : r.top - th - gap;
+    var left = cx - tw / 2;
+    if (left < 8) left = 8;
+    if (left + tw > vw - 8) left = Math.max(8, vw - 8 - tw); // 水平夹在视口内
+    tip.style.left = left + "px";
+    tip.style.top = Math.round(top) + "px";
+    tip.classList.toggle("ui-tip--below", below);
+    // 尾巴 x（相对气泡左缘），夹在 [12, tw-12]
+    var caret = cx - left;
+    if (caret < 12) caret = 12;
+    if (caret > tw - 12) caret = tw - 12;
+    tip.style.setProperty("--cx", caret + "px");
+  }
+
+  // 取悬停/聚焦的元素：优先已转换的 data-tip，也顺手把尚未处理的 title 当场转换。
+  function anchorOf(e) {
+    var el = e.target && e.target.closest ? e.target.closest("[title], [data-tip]") : null;
+    if (!el) return null;
+    hydrate(el);
+    return (el.dataset.tip && shouldTip(el)) ? el : null;
+  }
+
+  // 当前「实际渲染出来」的可见文字；文字被隐藏（display:none / visibility:hidden /
+  // opacity:0 / 零宽——含侧栏收起态 .tab-label 的 max-width:0+opacity:0）则视为无可见文字。
+  // 用 textContent 之和而非逐节点：避免重复累计，也兜住文字跨多个子节点的情况。
+  function visibleText(el) {
+    if (!el) return "";
+    var s = "";
+    var walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+    var n;
+    while ((n = walker.nextNode())) {
+      var t = n.nodeValue;
+      if (!t || !t.trim()) continue;
+      var p = n.parentElement;
+      if (!p) continue;
+      var cs = getComputedStyle(p);
+      if (cs.display === "none" || cs.visibility === "hidden" || cs.opacity === "0") continue;
+      var r = p.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) continue;  // 零宽 = 被收起，不算可见
+      s += t;
+    }
+    return s.trim();
+  }
+
+  // 元素里「全部文字」（无视可见性），用于区分「纯图标」与「有文字但被隐藏」。
+  function rawText(el) {
+    if (!el) return "";
+    return (el.textContent || "").replace(/\s+/g, " ").trim();
+  }
+
+  // 显隐闸门：仅当锚点「有文字、但当前被隐藏」时才弹——
+  //   侧栏收起态 .tab-label（max-width:0+opacity:0，只剩图标）需要气泡补名字；
+  //   纯图标按钮（主题 / 菜单 / 刷新，无任何文字节点）→ 不弹；
+  //   侧栏开关（.side-toggle）虽也是纯图标，但「收起/展开」语义图标不足以表达，显式允许；
+  //   文字已可见（宽边页签、带可见标签的按钮）→ 不弹。
+  function shouldTip(el) {
+    if (!el.dataset.tip) return false;
+    if (el.classList && el.classList.contains("side-toggle")) return true; // 侧栏开关：显式允许
+    if (rawText(el) === "") return false;          // 其余纯图标：无文字可提示
+    if (visibleText(el) !== "") return false;       // 文字已可见：自解释
+    return true;                                     // 有文字但被隐藏：弹
+  }
+
+  document.addEventListener("pointerover", function (e) {
+    if (e.pointerType === "touch") return;  // 触摸端不弹
+    var el = anchorOf(e);
+    if (el) {
+      if (el === anchor) return;            // 同一锚点，无需重排
+      clearTimeout(hideTimer);
+      clearTimeout(showTimer);
+      if (anchor && anchor !== el) hide();  // 切换目标：先收旧的
+      showTimer = setTimeout(function () {  // 悬停意图延迟，避免「一碰就弹」
+        showTimer = 0;
+        show(el);
+      }, SHOW_DELAY);
+    } else {
+      // 移到非提示目标上：取消待弹、延迟收起
+      clearTimeout(showTimer);
+      clearTimeout(hideTimer);
+      hideTimer = setTimeout(function () { hideTimer = 0; hide(); }, HIDE_DELAY);
+    }
+  }, true);
+
+  document.addEventListener("pointerout", function (e) {
+    if (e.pointerType === "touch") return;
+    clearTimeout(showTimer);                // 离开时取消尚未弹出的
+    if (!anchor) return;
+    var to = e.relatedTarget;
+    if (to && anchor.contains(to)) return;  // 移到锚点内部不算离开
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(function () { hideTimer = 0; hide(); }, HIDE_DELAY);
+  }, true);
+
+  document.addEventListener("focusin", function (e) {
+    var el = anchorOf(e);
+    if (!el || el === anchor) return;
+    clearTimeout(showTimer);
+    clearTimeout(hideTimer);
+    if (anchor) hide();
+    show(el);                               // 键盘聚焦即时反馈（无障碍）
+  });
+  document.addEventListener("focusout", function (e) {
+    if (!anchor) return;
+    var to = e.relatedTarget;
+    if (to && anchor.contains(to)) return;
+    clearTimeout(showTimer);
+    clearTimeout(hideTimer);
+    hideTimer = setTimeout(function () { hideTimer = 0; hide(); }, HIDE_DELAY);
+  });
+
+  function onScroll() {
+    if (!anchor) return;
+    if (!anchor.isConnected) { hide(); return; } // 锚点被重建移除则收起
+    place(anchor);
+  }
+  window.addEventListener("scroll", onScroll, true);
+  window.addEventListener("resize", function () {
+    if (anchor) hide();                     // resize 后坐标失效，简单收起，下次悬停再显
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key === "Escape") hide();
+  });
+
+  // 初始化：当前 DOM + 动态内容兜底
+  function boot() { hydrateRoot(document); }
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", boot);
+  } else {
+    boot();
+  }
+  if (window.MutationObserver) {
+    var mo = new MutationObserver(function (muts) {
+      for (var i = 0; i < muts.length; i++) {
+        var m = muts[i];
+        if (m.type === "attributes") {
+          if (m.target && m.target.nodeType === 1) hydrate(m.target);
+          continue;
+        }
+        if (m.addedNodes && m.addedNodes.length) {
+          for (var j = 0; j < m.addedNodes.length; j++) {
+            var n = m.addedNodes[j];
+            if (n.nodeType === 1) hydrateRoot(n);
+          }
+        }
+      }
+      if (anchor && !anchor.isConnected) hide(); // 当前锚点随内容重建被移除则收起
+    });
+    mo.observe(document.body, {
+      childList: true, subtree: true,
+      attributes: true, attributeFilter: ["title"],
+    });
+  }
+})();

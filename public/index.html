@@ -384,7 +384,7 @@
   <div id="settingsModal" class="modal hidden">
     <div class="modal-card settings-card" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
       <h2 class="modal-title" id="settingsTitle">设置</h2>
-      <p class="modal-desc">偏好只保存在当前浏览器，换设备或清除缓存后会回到默认。</p>
+      <p class="modal-desc">偏好只保存在当前浏览器，清除缓存后会回到默认。</p>
 
       <section class="settings-block">
         <div class="settings-block-head">
@@ -625,9 +625,9 @@
         var iconRight = auto ? !pinned : narrow;
         root.classList.toggle("side-icon-right", iconRight);
         var label;
-        if (!auto) label = narrow ? "展开侧边栏（宽边）" : "收起侧边栏（窄边）";
-        else if (pinned) label = "使能鼠标侧边栏动画（收回窄边，鼠标移入展开）";
-        else label = "固定展开侧边栏（不随鼠标收回）";
+        if (!auto) label = narrow ? "展开侧边栏" : "收起侧边栏";
+        else if (pinned) label = "使能鼠标侧边栏动画";
+        else label = "固定展开侧边栏";
         var all = document.querySelectorAll(".side-toggle");
         for (var i = 0; i < all.length; i++) {
           all[i].setAttribute("aria-pressed", iconRight ? "true" : "false");

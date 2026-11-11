@@ -5119,7 +5119,7 @@ html.side-rail { --side-ease: var(--side-ease-in); }
   /* 连续曲率圆角（squircle）：普通 border-radius 在「边→弧」交界曲率会突变，
      看着发硬；superellipse 让角部曲率连续过渡，更自然。不支持的浏览器
      忽略 corner-shape，回退到下面这枚更柔的 16px 圆角。 */
-  border-radius: 16px;
+  border-radius: 12px;
   corner-shape: superellipse;
   background: linear-gradient(140deg, var(--sw-from), var(--sw-to));
   box-shadow: 0 6px 16px -10px rgba(6, 9, 20, 0.6), inset 0 0 0 1px rgba(255, 255, 255, 0.16);
@@ -5205,4 +5205,75 @@ html.side-rail { --side-ease: var(--side-ease-in); }
 }
 @media (prefers-reduced-motion: reduce) {
   .accent-tile, .switch-track, .switch-knob { transition: none !important; }
+}
+
+/* ==========================================================================
+   全局气泡提示（替代原生 title，统一玻璃主题风格）
+   --------------------------------------------------------------------------
+   原生 title 是系统默认气泡（浅黄/灰白小框），与本站深色玻璃主题不搭；这里用
+   一枚复用的固定定位元素接管所有 title：玻璃磨砂底 + 品牌紫描边 + 柔光阴影，
+   跟随主题深浅与强调色自动适配。控制器见 app.js 末尾的 tooltip IIFE。
+   ========================================================================== */
+.ui-tip {
+  position: fixed;
+  z-index: 320;                /* 高于弹窗(200)/Toast(300)；pointer-events:none 不挡操作 */
+  max-width: 260px;
+  padding: 6px 10px;
+  border: 1px solid var(--brand-line);
+  border-radius: var(--r-sm);
+  /* 玻璃底：先给不透明同色系兜底（不支持 color-mix 的浏览器），再用半透明磨砂覆盖 */
+  background: var(--surface-2);
+  background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+  -webkit-backdrop-filter: blur(10px) saturate(1.4);
+  backdrop-filter: blur(10px) saturate(1.4);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+  white-space: normal;         /* 长提示（如采购状态 pill）可换行，比原生更易读 */
+  box-shadow:
+    0 10px 28px -14px rgba(0, 0, 0, 0.55),
+    0 4px 14px -8px var(--halo); /* 品牌色柔光，呼应卡片下方辉光 */
+  opacity: 0;
+  transform: translateY(3px);
+  transition: opacity 0.14s var(--ease), transform 0.14s var(--ease), visibility 0.14s;
+  visibility: hidden;
+  pointer-events: none;         /* 纯信息，不挡鼠标，移上去也不闪 */
+}
+.ui-tip.show {
+  opacity: 1;
+  transform: translateY(0);
+  visibility: visible;
+}
+
+/* 小尾巴：与气泡同底色的方块转 45°，只描朝锚点那两条边，拼出三角。
+   横向位置由 --cx（JS 写入、已夹取）决定，箭头始终指向锚点中心。 */
+.ui-tip::after {
+  content: "";
+  position: absolute;
+  left: calc(var(--cx, 50%) - 4px);
+  bottom: -5px;                /* 默认气泡在锚点上方，尾巴朝下 */
+  width: 8px;
+  height: 8px;
+  background: var(--surface-2);
+  background: color-mix(in srgb, var(--surface-2) 88%, transparent);
+  border: 1px solid var(--brand-line);
+  border-top: none;
+  border-left: none;
+  border-bottom-right-radius: 2px;
+  transform: rotate(45deg);
+}
+/* 气泡翻到锚点下方时：尾巴移到顶部、尖朝上 */
+.ui-tip--below::after {
+  bottom: auto;
+  top: -5px;
+  border-top: 1px solid var(--brand-line);
+  border-left: 1px solid var(--brand-line);
+  border-right: none;
+  border-bottom: none;
+  border-top-left-radius: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-tip { transition: none !important; }
 }
