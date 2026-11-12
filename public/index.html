@@ -34,8 +34,21 @@
         oldAuto = localStorage.getItem("tb_sidebar_auto");
         rail = localStorage.getItem("tb_sidebar_rail");
       } catch (e) {}
-      if (allowed.indexOf(ac) < 0) ac = "violet";
+      if (allowed.indexOf(ac) < 0) ac = "amber";
       document.documentElement.setAttribute("data-accent", ac);
+      /* 强调色（--accent）引导：默认青碧，6 张卡由「设置」弹窗写入 tb_accent_color */
+      var acColor = null, allowedColor = ["teal", "blue", "indigo", "green", "orange", "red"];
+      try { acColor = localStorage.getItem("tb_accent_color"); } catch (e) {}
+      if (allowedColor.indexOf(acColor) < 0) acColor = "teal";
+      document.documentElement.setAttribute("data-accentcolor", acColor);
+      /* 聚光开关：默认关闭（加 no-spotlight）；存 "1" 才开启 */
+      var spot = null;
+      try { spot = localStorage.getItem("tb_spotlight"); } catch (e) {}
+      if (spot !== "1") document.documentElement.classList.add("no-spotlight");
+      /* 紫青粉流光开关：默认开启（加 data-ringfx="rainbow"）；存 "0" 才关闭 */
+      var ringfx = null;
+      try { ringfx = localStorage.getItem("tb_ringfx"); } catch (e) {}
+      if (ringfx !== "0") document.documentElement.setAttribute("data-ringfx", "rainbow");
       /* 老版本用 tb_sidebar_auto 存「自动悬停」；没写过新 key 时沿用一次，避免升级后丢失偏好 */
       var animOn = anim === null ? oldAuto === "1" : anim === "1";
       /* 动画使能时刷新恒从「自动悬停窄边」起步：竖线靠右。
@@ -384,15 +397,44 @@
   <div id="settingsModal" class="modal hidden">
     <div class="modal-card settings-card" role="dialog" aria-modal="true" aria-labelledby="settingsTitle">
       <h2 class="modal-title" id="settingsTitle">设置</h2>
-      <p class="modal-desc">偏好只保存在当前浏览器，清除缓存后会回到默认。</p>
+      <p class="modal-desc">偏好保存在当前浏览器，清除缓存后恢复默认。</p>
 
       <section class="settings-block">
         <div class="settings-block-head">
           <h3>主题色</h3>
-          <span>当前：<b id="accentName">星云紫</b></span>
+          <span>当前：<b id="accentName">暖橙</b></span>
         </div>
-        <!-- 色卡由 app.js 的 ACCENTS 渲染；第一个就是改版前一直用的品牌紫 -->
+        <!-- 色卡由 app.js 的 ACCENTS 渲染；第一张暖橙为默认主题色，星云紫为历史品牌紫 -->
         <div id="accentGrid" class="accent-grid" role="radiogroup" aria-label="主题色"></div>
+      </section>
+
+      <section class="settings-block">
+        <div class="settings-block-head">
+          <h3>强调色</h3>
+          <span>当前：<b id="accentColorName">青碧</b></span>
+        </div>
+        <!-- 强调色色卡由 app.js 的 ACCENT_COLORS 渲染；第一张青碧是默认强调色 -->
+        <div id="accentColorGrid" class="accent-grid" role="radiogroup" aria-label="强调色"></div>
+      </section>
+
+      <section class="settings-block">
+        <label class="settings-row" for="spotlightToggle">
+          <span class="settings-row-text">
+            <b>卡片聚光</b>
+          </span>
+          <input id="spotlightToggle" class="switch-input" type="checkbox" role="switch" aria-label="卡片聚光效果使能" />
+          <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
+        </label>
+      </section>
+
+      <section class="settings-block">
+        <label class="settings-row" for="ringFxToggle">
+          <span class="settings-row-text">
+            <b>紫青粉流光</b>
+          </span>
+          <input id="ringFxToggle" class="switch-input" type="checkbox" role="switch" aria-label="紫青粉流光边框特效使能" />
+          <span class="switch-track" aria-hidden="true"><span class="switch-knob"></span></span>
+        </label>
       </section>
 
       <section class="settings-block">
