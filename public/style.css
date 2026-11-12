@@ -57,8 +57,14 @@
   /* 品牌 */
   --brand: #6d5bf6;
   --brand-ink: #4b3fd4;
-  --brand-soft: rgba(109, 91, 246, 0.1);
-  --brand-line: rgba(109, 91, 246, 0.32);
+  /* 品牌主色 RGB 三元组：供 color-mix / rgb() 派生「流光同族」与「阴影跟随强调色」。
+     换强调色时由 accent 映射覆盖为 --a-rgb，实现单色族 + 整体联动。 */
+  --brand-rgb: 109 91 246;
+  --brand-soft: rgb(var(--brand-rgb) /  0.1);
+  --brand-line: rgb(var(--brand-rgb) /  0.32);
+  /* 青色辅色保留为「语义次色」：仅用于奖金条 / 认领标签等需要独立于品牌族的区分信号
+     （见 .task-seg.bonus / .tag.claim）。品牌视觉语言（流光、导航竖条、顶栏圆点、标题竖条、
+     极光、阴影）走单色族，由 --brand 派生。 */
   --accent: #22d3ee;
   --accent-soft: rgba(22, 184, 212, 0.12);
   /* 侧栏「双色标签条」：浅紫底横条 + 深紫字，深浅主题各配一套，
@@ -96,9 +102,13 @@
      所以这里只放颜色，角度 from var(--ga) 留在每条 background 里就地引用。 */
   /* 悬停流光的三段色标。--ring-1 不再是「很淡的紫」：它占了 0~40deg 与 140~360deg
      两段，太淡会让整圈出现一大片暗边，看起来像边框没画全。 */
-  --ring-1: rgba(109, 91, 246, 0.62);
-  --ring-2: rgba(22, 184, 212, 0.95);
-  --ring-3: rgba(214, 60, 160, 0.9);
+  --ring-1: rgb(var(--brand-rgb) /  0.62);
+  /* 浅色悬停流光改为单色族（与深色一致）：第②段品牌色提亮、第③段品牌色压暗，
+     均用 color-mix 从 --brand 派生，不再写死青/粉。配合下方收淡的 --spot(0.14) 与
+     --card-glow(0.012)，白底 hover 时内部仍是干净白且鼠标聚光可见。
+     注：单色族淡边在白底对比低于青/粉双色，必须把聚光收淡，否则会被衬成"整卡变色"。 */
+  --ring-2: color-mix(in srgb, var(--brand) 45%, white);
+  --ring-3: color-mix(in srgb, var(--brand) 72%, #0a0a0f);
   --ring-stops: var(--ring-1) 0deg, var(--ring-2) 40deg, var(--ring-3) 84deg,
     var(--ring-1) 140deg, var(--ring-1) 360deg;
 
@@ -109,15 +119,15 @@
      两者都是纯色标（不含 var(--ga)），可以直接作为自定义属性被卡片继承 / 覆盖；
      旋转角度 from var(--ga) 必须留在各卡片的 background 里就地写，不能塞进令牌。 */
   /* 浅色下 1px 紫边要压得住白卡片又不抢戏：0.3 几乎看不见，0.38 是实测的临界点 */
-  --edge: rgba(109, 91, 246, 0.38);
+  --edge: rgb(var(--brand-rgb) /  0.38);
   --ring-idle: var(--edge) 0deg, var(--edge) 360deg;
   /* 悬停时打在卡片下方的一团品牌色辉光 */
-  --halo: rgba(109, 91, 246, 0.5);
+  --halo: rgb(var(--brand-rgb) /  0.5);
 
   /* 光斑 / 网格 */
-  --spot: rgba(109, 91, 246, 0.17);
+  --spot: rgb(var(--brand-rgb) /  0.14); /* 单色族淡边下收淡至 0.14：比 0.10 明显可见，配合 --card-glow 0.012 仍保白底干净；若显脏可再收紧半径 */
   --spot-r: 320px;
-  --card-glow: rgba(109, 91, 246, 0.028);
+  --card-glow: rgb(var(--brand-rgb) /  0.012);
   --grid-line: rgba(15, 22, 48, 0.05);
 
   /* 侧栏（跟随主题：浅色 = 浅灰蓝面板 + 深字，深色 = 深空）
@@ -133,11 +143,11 @@
   --side-line: rgba(15, 22, 48, 0.13);
   --side-hover: rgba(15, 22, 48, 0.075);
   --side-scroll: rgba(15, 22, 48, 0.24);
-  --side-active-bg: linear-gradient(100deg, rgba(109, 91, 246, 0.2), rgba(22, 184, 212, 0.14));
-  --side-active-ring: rgba(109, 91, 246, 0.32);
+  --side-active-bg: linear-gradient(100deg, rgb(var(--brand-rgb) /  0.2), rgb(var(--brand-rgb) /  0.14));
+  --side-active-ring: rgb(var(--brand-rgb) /  0.32);
   --side-active-sh: 0 12px 24px -18px rgba(78, 62, 190, 0.75);
-  --side-orb-1: rgba(109, 91, 246, 0.2);
-  --side-orb-2: rgba(22, 184, 212, 0.14);
+  --side-orb-1: rgb(var(--brand-rgb) /  0.2);
+  --side-orb-2: rgb(var(--brand-rgb) /  0.14);
   --side-menu-bg: #ffffff;
   --side-menu-line: rgba(15, 22, 48, 0.12);
   --side-item: #2b3350;
@@ -195,6 +205,8 @@ html[data-theme="dark"] {
 
   --brand: #8b7cff;
   --brand-ink: #a99fff;
+  /* 品牌主色 RGB 三元组（同浅色，仅数值为深色档） */
+  --brand-rgb: 139 124 255;
   --brand-soft: rgba(139, 124, 255, 0.16);
   --brand-line: rgba(139, 124, 255, 0.4);
   /* 深色下的标签条：底色不能照搬浅色的浅紫（会像一块发光补丁），
@@ -207,11 +219,12 @@ html[data-theme="dark"] {
 
   --ok: #5fe0a1;
   --ok-bg: #0e2a1f;
-  --danger: #ff8fa5;
-  --danger-bg: #2c111a;
-  --danger-line: rgba(255, 143, 165, 0.32);
-  /* 深色下同档柔和红，仍比亮粉的 --danger 深，保证白字对比度 */
-  --danger-fill: #c84060;
+  --danger: #ff4d6d;
+  --danger-bg: #3a1622;
+  --danger-line: rgba(255, 77, 109, 0.42);
+  /* 深色 --danger 改为高亮红 #ff4d6d（黑底上更跳、危险语义醒目）；
+     --danger-fill 用略深的 #e11d48 以保白字对比，整组 --danger-* 同为高亮红族 */
+  --danger-fill: #e11d48;
 
   /* 深色下的只读提示：底色用不透明的暖深棕。
      不能用「半透明琥珀」——页面背后有极光光团，半透明底会把紫色透上来，
@@ -225,7 +238,7 @@ html[data-theme="dark"] {
 
   --spot: rgba(139, 124, 255, 0.24);
   --spot-r: 320px;
-  --card-glow: rgba(120, 102, 255, 0.11);
+  --card-glow: rgb(var(--brand-rgb) / 0.11);
   --grid-line: rgba(255, 255, 255, 0.045);
 
   --side-bg: #111629;
@@ -236,11 +249,11 @@ html[data-theme="dark"] {
   --side-line: rgba(255, 255, 255, 0.075);
   --side-hover: rgba(255, 255, 255, 0.055);
   --side-scroll: rgba(255, 255, 255, 0.16);
-  --side-active-bg: linear-gradient(100deg, rgba(109, 91, 246, 0.34), rgba(22, 184, 212, 0.1));
+  --side-active-bg: linear-gradient(100deg, rgb(var(--brand-rgb) /  0.34), rgb(var(--brand-rgb) /  0.1));
   --side-active-ring: rgba(255, 255, 255, 0.1);
-  --side-active-sh: 0 10px 24px -16px rgba(109, 91, 246, 0.95);
-  --side-orb-1: rgba(109, 91, 246, 0.34);
-  --side-orb-2: rgba(22, 184, 212, 0.16);
+  --side-active-sh: 0 10px 24px -16px rgb(var(--brand-rgb) /  0.95);
+  --side-orb-1: rgb(var(--brand-rgb) /  0.34);
+  --side-orb-2: rgb(var(--brand-rgb) /  0.16);
   --side-menu-bg: #141a2b;
   --side-menu-line: rgba(255, 255, 255, 0.1);
   --side-item: rgba(232, 235, 247, 0.78);
@@ -252,8 +265,8 @@ html[data-theme="dark"] {
   --head-shadow: 0 10px 30px -22px rgba(0, 0, 0, 0.9);
 
   --ring-1: rgba(139, 124, 255, 0.85);
-  --ring-2: rgba(34, 211, 238, 1);
-  --ring-3: rgba(214, 60, 160, 0.98);
+  --ring-2: color-mix(in srgb, var(--brand) 45%, white);
+  --ring-3: color-mix(in srgb, var(--brand) 72%, #08060f);
   /* 深色下常态边框用低亮度浅紫，1px 也不刺眼；悬停辉光比浅色更强 */
   --edge: rgba(139, 124, 255, 0.34);
   --ring-idle: var(--edge) 0deg, var(--edge) 360deg;
@@ -289,6 +302,7 @@ html[data-theme="dark"][data-accent="rose"]   { --a-rgb: 255 122 166; --a-ink-rg
 
 html[data-accent]:not([data-accent="violet"]) {
   --brand: rgb(var(--a-rgb));
+  --brand-rgb: var(--a-rgb);
   --brand-ink: rgb(var(--a-ink-rgb));
   --brand-soft: rgb(var(--a-rgb) / 0.1);
   --brand-line: rgb(var(--a-rgb) / 0.32);
@@ -296,8 +310,8 @@ html[data-accent]:not([data-accent="violet"]) {
   --edge: rgb(var(--a-rgb) / 0.38);
   --ring-1: rgb(var(--a-rgb) / 0.62);
   --halo: rgb(var(--a-rgb) / 0.5);
-  --spot: rgb(var(--a-rgb) / 0.17);
-  --card-glow: rgb(var(--a-rgb) / 0.028);
+  --spot: rgb(var(--a-rgb) / 0.14); /* 浅色强调色映射同步 0.14（与基础 --spot 一致），可见且避免单色族淡边把聚光衬脏 */
+  --card-glow: rgb(var(--a-rgb) / 0.012);
   --who-strip-bg: rgb(var(--a-rgb) / 0.1);
   --who-strip-line: rgb(var(--a-rgb) / 0.55);
   --who-strip-ink: rgb(var(--a-ink-rgb));
@@ -413,7 +427,7 @@ html:not([data-theme="dark"]) #bg-particles {
   height: 54vw;
   left: -14vw;
   top: -20vw;
-  background: radial-gradient(circle, rgba(109, 91, 246, 0.85), transparent 66%);
+  background: radial-gradient(circle, rgb(var(--brand-rgb) /  0.85), transparent 66%);
   opacity: 0.42;
   animation: drift-a 28s ease-in-out infinite alternate;
 }
@@ -423,7 +437,7 @@ html:not([data-theme="dark"]) #bg-particles {
   height: 46vw;
   right: -12vw;
   top: 4vh;
-  background: radial-gradient(circle, rgba(22, 184, 212, 0.8), transparent 66%);
+  background: radial-gradient(circle, rgb(var(--brand-rgb) /  0.8), transparent 66%);
   opacity: 0.3;
   animation: drift-b 34s ease-in-out infinite alternate;
 }
@@ -528,7 +542,7 @@ html[data-theme="dark"] .bg-vignette {
   right: 0;
   bottom: -1px;
   height: 1px;
-  background: linear-gradient(90deg, transparent, var(--brand-line) 30%, rgba(34, 211, 238, 0.35) 70%, transparent);
+  background: linear-gradient(90deg, transparent, var(--brand-line) 30%, rgb(var(--brand-rgb) /  0.35) 70%, transparent);
   opacity: 0.7;
   pointer-events: none;
 }
@@ -538,8 +552,9 @@ html[data-theme="dark"] .bg-vignette {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: linear-gradient(135deg, var(--brand), var(--accent));
-  box-shadow: 0 0 10px 1px rgba(109, 91, 246, 0.7);
+  /* 单色族：顶栏圆点改读品牌主色→浅色，不再用青色辅色 */
+  background: linear-gradient(135deg, var(--brand), var(--brand-ink));
+  box-shadow: 0 0 10px 1px rgb(var(--brand-rgb) /  0.7);
 }
 
 .topbar-title {
@@ -586,7 +601,7 @@ html[data-theme="dark"] .bg-vignette {
   color: var(--brand-ink);
   border-color: var(--brand-line);
   background: var(--brand-soft);
-  box-shadow: 0 8px 18px -12px rgba(109, 91, 246, 0.8);
+  box-shadow: 0 8px 18px -12px rgb(var(--brand-rgb) /  0.8);
 }
 
 .top-btn:focus-visible {
@@ -944,7 +959,8 @@ html[data-theme="dark"] .bg-vignette {
   height: 18px;
   margin-top: -9px;
   border-radius: 0 3px 3px 0;
-  background: linear-gradient(180deg, #a78bfa, #22d3ee);
+  /* 单色族：选中竖条改读令牌（brand-ink → brand），不再写死紫→青 */
+  background: linear-gradient(180deg, var(--brand-ink), var(--brand));
   box-shadow: 0 0 14px 1px rgba(139, 124, 255, 0.9);
 }
 
@@ -1231,7 +1247,7 @@ html[data-theme="dark"] .bg-vignette {
   background: var(--grad);
   color: rgba(255, 255, 255, 0.85); /* 图案用 currentColor：半透明白，让紫色渐变透出来，不再刺眼 */
   box-shadow:
-    0 6px 30px -14px rgba(109, 91, 246, 0.85),
+    0 6px 30px -14px rgb(var(--brand-rgb) /  0.85),
     inset 0 0 0 1px rgba(255, 255, 255, 0.18);
 }
 
@@ -1259,7 +1275,7 @@ html[data-theme="dark"] .bg-vignette {
   height: 34px;
   border-radius: 50%;
   box-shadow:
-    0 3px 16px -8px rgba(109, 91, 246, 0.9),
+    0 3px 16px -8px rgb(var(--brand-rgb) /  0.9),
     inset 0 0 0 1px rgba(255, 255, 255, 0.16);
 }
 
@@ -1316,14 +1332,14 @@ button {
   background-position: 0% 0%;
   color: #fff;
   box-shadow:
-    0 14px 30px -16px rgba(109, 91, 246, 0.95),
+    0 14px 30px -16px rgb(var(--brand-rgb) /  0.95),
     inset 0 1px 0 rgba(255, 255, 255, 0.28);
 }
 
 .primary:hover {
   background-position: 100% 100%;
   box-shadow:
-    0 20px 40px -18px rgba(109, 91, 246, 1),
+    0 20px 40px -18px rgb(var(--brand-rgb) /  1),
     inset 0 1px 0 rgba(255, 255, 255, 0.34);
   transform: translateY(-1px);
 }
@@ -1716,8 +1732,9 @@ input[type="number"] {
   width: 3px;
   height: 14px;
   border-radius: 3px;
-  background: linear-gradient(180deg, var(--brand), var(--accent));
-  box-shadow: 0 0 10px rgba(109, 91, 246, 0.55);
+  /* 单色族：卡片标题竖条改读品牌主色→浅色，不再用青色辅色 */
+  background: linear-gradient(180deg, var(--brand), var(--brand-ink));
+  box-shadow: 0 0 10px rgb(var(--brand-rgb) /  0.55);
 }
 
 .section-head .hint {
@@ -2495,7 +2512,7 @@ input[type="number"] {
 
 .tag.claim {
   background: var(--accent-soft);
-  border-color: rgba(22, 184, 212, 0.4);
+  border-color: rgb(var(--brand-rgb) /  0.4);
   color: #0b7b8e;
 }
 
@@ -2564,7 +2581,7 @@ html[data-theme="dark"] .pill.done {
   background: var(--brand);
   border-color: transparent;
   color: #fff;
-  box-shadow: 0 10px 22px -12px rgba(109, 91, 246, 0.9);
+  box-shadow: 0 10px 22px -12px rgb(var(--brand-rgb) /  0.9);
 }
 
 /* ---------- 项目中心页头 ---------- */
@@ -2765,7 +2782,7 @@ html[data-theme="dark"] .pill.done {
   border-radius: 14px;
   background: var(--grad);
   color: #fff;
-  box-shadow: 0 14px 28px -14px rgba(109, 91, 246, 0.9);
+  box-shadow: 0 14px 28px -14px rgb(var(--brand-rgb) /  0.9);
   transition: transform 0.4s var(--ease-pop);
 }
 
@@ -2932,7 +2949,7 @@ html[data-theme="dark"] .card .num {
   display: block;
   height: 100%;
   border-radius: inherit;
-  background: linear-gradient(90deg, #7c5cfc, #22d3ee);
+  background: linear-gradient(90deg, var(--brand), var(--brand-ink));
   box-shadow: 0 0 16px rgba(124, 92, 252, 0.55);
   transition: width 0.7s var(--ease);
 }
@@ -3119,9 +3136,10 @@ html[data-theme="dark"] .tone-red { color: #ff8fa5; }
   font-weight: 700;
   box-shadow: 0 6px 16px -8px var(--brand), inset 0 1px 0 rgba(255, 255, 255, 0.28);
 }
-/* 深色令牌里 brand-ink 偏亮，白字对比不足，换一档更深的渐变起点 */
+/* 深色下 brand-ink 偏亮、白字对比不足；用 color-mix 把品牌色压暗一档做渐变起点，
+   既保留白字对比，又跟随强调色（单色族）——不再写死 #6d5bf6 */
 html[data-theme="dark"] .seg-btn.on {
-  background: linear-gradient(135deg, #6d5bf6, var(--brand));
+  background: linear-gradient(135deg, color-mix(in srgb, var(--brand) 64%, #000), var(--brand));
 }
 .seg-btn:focus-visible {
   outline: 2px solid var(--brand);
@@ -3787,13 +3805,19 @@ html.modal-open .bg-aurora * {
   max-width: min(88vw, 420px);
   padding: 11px 18px;
   border-radius: 999px;
-  background: rgba(12, 16, 30, 0.94);
-  border: 1px solid rgba(255, 255, 255, 0.12);
-  color: #f2f4ff;
+  /* 跟随主题与强调色：底色用主题浮层令牌（浅色=浅、深色=深），描边用强调色，
+     外层再加一圈强调色柔光 —— 切浅色/深色或换主题色时，toast 整体跟着变，不再是固定深色。 */
+  background: var(--surface-2);
+  background: color-mix(in srgb, var(--surface-2) 92%, transparent);
+  border: 1px solid var(--brand-line);
+  color: var(--text);
   font-size: 13px;
   font-weight: 500;
   text-align: center;
-  box-shadow: 0 24px 50px -18px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(109, 91, 246, 0.1);
+  box-shadow:
+    0 24px 50px -18px rgba(0, 0, 0, 0.7),
+    0 0 0 1px rgb(var(--brand-rgb) /  0.2),
+    0 0 22px -6px rgb(var(--brand-rgb) /  0.35);
   -webkit-backdrop-filter: blur(12px);
   backdrop-filter: blur(12px);
   animation: toast-in 0.32s var(--ease-pop) both;
@@ -3863,8 +3887,8 @@ html.modal-open .bg-aurora * {
   z-index: -1;
   border-radius: 50%;
   background:
-    radial-gradient(closest-side, rgba(109, 91, 246, 0.34), transparent 72%),
-    radial-gradient(closest-side at 70% 70%, rgba(22, 184, 212, 0.24), transparent 70%);
+    radial-gradient(closest-side, rgb(var(--brand-rgb) /  0.34), transparent 72%),
+    radial-gradient(closest-side at 70% 70%, rgb(var(--brand-rgb) /  0.24), transparent 70%);
   filter: blur(30px);
   pointer-events: none;
 }
@@ -4015,7 +4039,7 @@ html[data-theme="dark"] .panel {
   color: var(--brand-ink);
   border-color: var(--brand-line);
   background: var(--brand-soft);
-  box-shadow: 0 8px 18px -12px rgba(109, 91, 246, 0.8);
+  box-shadow: 0 8px 18px -12px rgb(var(--brand-rgb) /  0.8);
 }
 
 .theme-btn:focus-visible {
