@@ -189,22 +189,23 @@ document.addEventListener("click", (e) => {
 /* ---------- 设置：强调色 + 侧边栏动画 ----------
    两项都是纯前端偏好，只落 html 属性 / class 与 localStorage，不请求后端。
    <head> 里的引导脚本会在样式表加载前先还原，避免刷新时闪一下默认色 / 默认宽边。
-   强调色以「一个 RGB 三元组 + 一条渐变」的形式喂给 style.css，整套品牌令牌由 CSS 统一推导；
-   第一个色卡 violet 就是改版前一直在用的品牌紫，不做任何覆盖。 */
+   主题色以「一个 RGB 三元组 + 一条渐变」的形式喂给 style.css，整套品牌令牌由 CSS 统一推导；
+   第一个色卡 amber 为默认主题色；violet 是改版前一直在用的品牌紫，仍保留可选（无覆盖、走基础令牌）。 */
 const ACCENTS = [
-  { id: "violet", name: "星云紫", from: "#8b7cff", to: "#5b4be0" },
+  { id: "amber",  name: "暖橙",   from: "#ffb355", to: "#b7650a" },
   { id: "ocean",  name: "海洋蓝", from: "#66a3ff", to: "#2a63c8" },
+  { id: "violet", name: "星云紫", from: "#8b7cff", to: "#5b4be0" },
   { id: "teal",   name: "青碧",   from: "#35d6e6", to: "#0a8fa5" },
   { id: "forest", name: "松绿",   from: "#4fd6a0", to: "#0f8a5c" },
-  { id: "amber",  name: "暖橙",   from: "#ffb355", to: "#b7650a" },
   { id: "rose",   name: "玫瑰",   from: "#ff7aa6", to: "#c02a63" },
 ];
 const ACCENT_KEY = "tb_accent";
 const SIDE_ANIM_KEY = "tb_sidebar_anim";
+const RING_FX_KEY = "tb_ringfx";
 
 function currentAccent() {
   const id = document.documentElement.getAttribute("data-accent");
-  return ACCENTS.some((a) => a.id === id) ? id : "violet";
+  return ACCENTS.some((a) => a.id === id) ? id : "amber";
 }
 function renderAccentGrid() {
   $("#accentGrid").innerHTML = ACCENTS.map(
@@ -235,7 +236,10 @@ function applyAccent(id) {
 }
 function openSettings() {
   paintAccentSelection();
+  paintAccentColorSelection();
   $("#sideAnimToggle").checked = document.documentElement.classList.contains("side-auto");
+  $("#spotlightToggle").checked = !document.documentElement.classList.contains("no-spotlight");
+  $("#ringFxToggle").checked = document.documentElement.getAttribute("data-ringfx") === "rainbow";
   setModalOpen($("#settingsModal"), true);
 }
 function closeSettings() {
@@ -260,6 +264,72 @@ $("#accentGrid").addEventListener("keydown", (e) => {
   next.focus();
   applyAccent(next.dataset.accent);
 });
+
+/* ---------- 强调色（accent）选择器：与上方「主题色」并列，6 张卡、青碧默认 ---------- */
+const ACCENT_COLORS = [
+  { id: "teal",   name: "青碧",   light: "#0891B2", dark: "#22D3EE" },
+  { id: "orange", name: "暖橙",   light: "#EA580C", dark: "#FB923C" },
+  { id: "blue",   name: "海洋蓝", light: "#2563EB", dark: "#60A5FA" },
+  { id: "indigo", name: "靛紫",   light: "#4F46E5", dark: "#818CF8" },
+  { id: "green",  name: "松绿",   light: "#16A34A", dark: "#4ADE80" },
+  { id: "red",    name: "红粉",   light: "#DC2626", dark: "#F87171" },
+];
+const ACCENT_COLOR_KEY = "tb_accent_color";
+function currentAccentColor() {
+  const id = document.documentElement.getAttribute("data-accentcolor");
+  return ACCENT_COLORS.some((a) => a.id === id) ? id : "teal";
+}
+function renderAccentColorGrid() {
+  $("#accentColorGrid").innerHTML = ACCENT_COLORS.map(
+    (a) =>
+      `<button class="accent-swatch" type="button" role="radio" aria-checked="false" tabindex="-1"` +
+      ` data-aid="${a.id}" title="${esc(a.name)}" aria-label="${esc(a.name)}"` +
+      ` style="--sw-from:${a.light};--sw-to:${a.dark}">` +
+      `<span class="accent-tile" aria-hidden="true"></span>` +
+      `<span class="accent-name">${esc(a.name)}</span>` +
+      `</button>`
+  ).join("");
+}
+function paintAccentColorSelection() {
+  const cur = currentAccentColor();
+  $("#accentColorGrid").querySelectorAll(".accent-swatch").forEach((b) => {
+    const on = b.dataset.aid === cur;
+    b.setAttribute("aria-checked", on ? "true" : "false");
+    b.tabIndex = on ? 0 : -1;
+  });
+  const hit = ACCENT_COLORS.find((a) => a.id === cur);
+  $("#accentColorName").textContent = hit ? hit.name : "默认";
+}
+function applyAccentColor(id) {
+  const next = ACCENT_COLORS.some((a) => a.id === id) ? id : "teal";
+  document.documentElement.setAttribute("data-accentcolor", next);
+  try { localStorage.setItem(ACCENT_COLOR_KEY, next); } catch (e) {}
+  paintAccentColorSelection();
+}
+renderAccentColorGrid();
+paintAccentColorSelection();
+$("#accentColorGrid").addEventListener("click", (e) => {
+  const btn = e.target.closest(".accent-swatch");
+  if (btn) applyAccentColor(btn.dataset.aid);
+});
+$("#accentColorGrid").addEventListener("keydown", (e) => {
+  if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+  const list = [...$("#accentColorGrid").querySelectorAll(".accent-swatch")];
+  const i = list.indexOf(document.activeElement);
+  if (i < 0) return;
+  e.preventDefault();
+  const step = e.key === "ArrowRight" || e.key === "ArrowDown" ? 1 : -1;
+  const next = list[(i + step + list.length) % list.length];
+  next.focus();
+  applyAccentColor(next.dataset.aid);
+});
+
+$("#spotlightToggle").addEventListener("change", (e) => {
+  const on = e.currentTarget.checked;
+  document.documentElement.classList.toggle("no-spotlight", !on);
+  try { localStorage.setItem("tb_spotlight", on ? "1" : "0"); } catch (err) {}
+});
+
 $("#sideAnimToggle").addEventListener("change", (e) => {
   const on = e.currentTarget.checked;
   // 侧栏交互脚本在 index.html 末尾，页面加载完成后它一定已经挂好；留个兜底防时序意外
@@ -268,6 +338,13 @@ $("#sideAnimToggle").addEventListener("change", (e) => {
     document.documentElement.classList.toggle("side-auto", on);
     try { localStorage.setItem(SIDE_ANIM_KEY, on ? "1" : "0"); } catch (err) {}
   }
+});
+
+$("#ringFxToggle").addEventListener("change", (e) => {
+  const on = e.currentTarget.checked;
+  if (on) document.documentElement.setAttribute("data-ringfx", "rainbow");
+  else document.documentElement.removeAttribute("data-ringfx");
+  try { localStorage.setItem(RING_FX_KEY, on ? "1" : "0"); } catch (err) {}
 });
 $("#settingsCloseBtn").addEventListener("click", closeSettings);
 $("#settingsModal").addEventListener("click", (e) => {
