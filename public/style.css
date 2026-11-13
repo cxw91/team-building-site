@@ -458,9 +458,9 @@ html:not([data-theme="dark"]) #bg-particles {
   width: 54vw;
   height: 54vw;
   left: -14vw;
-  top: -20vw;
-  background: radial-gradient(circle, rgb(var(--brand-rgb) /  0.85), transparent 66%);
-  opacity: 0.42;
+  top: -10vw;
+  background: radial-gradient(circle, rgb(var(--brand-rgb) /  0.75), transparent 66%);
+  opacity: 0.2;
   animation: drift-a 28s ease-in-out infinite alternate;
 }
 
@@ -470,7 +470,7 @@ html:not([data-theme="dark"]) #bg-particles {
   right: -12vw;
   top: 4vh;
   background: radial-gradient(circle, rgb(var(--brand-rgb) /  0.8), transparent 66%);
-  opacity: 0.3;
+  opacity: 0.2;
   animation: drift-b 34s ease-in-out infinite alternate;
 }
 
@@ -2903,7 +2903,13 @@ html[data-theme="dark"] .pill.static {
 }
 
 html[data-theme="dark"] .card .num {
-  background: linear-gradient(96deg, #f2f4ff 0%, #b3b9ff 55%, #7fe6f4 100%);
+  /* 跟主题色联动的渐变文字：用 --brand 与白混合出「淡→饱和」的层次，
+     替代原先写死的薰衣草→青色；用户切换强调色（amber/teal/…）时 KPI 数字同步变色，
+     不再和整套界面的品牌令牌脱节。仍在 text-clip 下做透明填充，保留原有的轻盈观感。 */
+  background: linear-gradient(96deg,
+    color-mix(in srgb, var(--brand) 42%, #fff) 0%,
+    color-mix(in srgb, var(--brand) 82%, #fff) 55%,
+    color-mix(in srgb, var(--brand) 96%, #fff) 100%);
   -webkit-background-clip: text;
   background-clip: text;
   -webkit-text-fill-color: transparent;
@@ -2999,7 +3005,9 @@ html[data-theme="dark"] .card .num {
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, var(--brand), var(--brand-ink));
-  box-shadow: 0 0 16px rgba(124, 92, 252, 0.55);
+  /* 进度条辉光跟随主题色：原先写死旧品牌紫 rgba(124,92,252,…)，切换强调色后仍是紫，
+     与品牌令牌脱节；改用 --brand-rgb 派生，整条渐变 + 辉光一起联动。 */
+  box-shadow: 0 0 16px rgb(var(--brand-rgb) / 0.5);
   transition: width 0.7s var(--ease);
 }
 

@@ -41,14 +41,14 @@
       try { acColor = localStorage.getItem("tb_accent_color"); } catch (e) {}
       if (allowedColor.indexOf(acColor) < 0) acColor = "teal";
       document.documentElement.setAttribute("data-accentcolor", acColor);
-      /* 聚光开关：默认开启（不写类）；存 "0" 则关闭，给 <html> 加 no-spotlight 由 CSS 隐藏光斑 */
+      /* 聚光开关：默认关闭（加 no-spotlight）；存 "1" 才开启 */
       var spot = null;
       try { spot = localStorage.getItem("tb_spotlight"); } catch (e) {}
-      if (spot === "0") document.documentElement.classList.add("no-spotlight");
-      /* 紫青粉流光开关：默认关闭（不写属性）；存 "1" 则给 <html> 加 data-ringfx="rainbow" */
+      if (spot !== "1") document.documentElement.classList.add("no-spotlight");
+      /* 紫青粉流光开关：默认开启（加 data-ringfx="rainbow"）；存 "0" 才关闭 */
       var ringfx = null;
       try { ringfx = localStorage.getItem("tb_ringfx"); } catch (e) {}
-      if (ringfx === "1") document.documentElement.setAttribute("data-ringfx", "rainbow");
+      if (ringfx !== "0") document.documentElement.setAttribute("data-ringfx", "rainbow");
       /* 老版本用 tb_sidebar_auto 存「自动悬停」；没写过新 key 时沿用一次，避免升级后丢失偏好 */
       var animOn = anim === null ? oldAuto === "1" : anim === "1";
       /* 动画使能时刷新恒从「自动悬停窄边」起步：竖线靠右。
