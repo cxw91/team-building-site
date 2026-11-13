@@ -356,19 +356,19 @@ html[data-theme="dark"][data-accent]:not([data-accent="violet"]) {
    --accent / --accent-soft；深色令牌由 html[data-theme="dark"][data-accentcolor="x"]
    以更高特异性覆盖。青碧与 :root / 深色基础令牌同值，这里显式写出以便与卡片一一对应。
    ========================================================================== */
-html[data-accentcolor="teal"]   { --accent: #0891B2; --accent-soft: rgba(8, 145, 178, 0.14); }
-html[data-accentcolor="blue"]   { --accent: #2563EB; --accent-soft: rgba(37, 99, 235, 0.14); }
-html[data-accentcolor="indigo"] { --accent: #4F46E5; --accent-soft: rgba(79, 70, 229, 0.14); }
-html[data-accentcolor="green"]  { --accent: #16A34A; --accent-soft: rgba(22, 163, 74, 0.14); }
-html[data-accentcolor="orange"] { --accent: #EA580C; --accent-soft: rgba(234, 88, 12, 0.14); }
-html[data-accentcolor="red"]    { --accent: #DC2626; --accent-soft: rgba(220, 38, 38, 0.14); }
+html[data-accentcolor="teal"]    { --accent: #0891B2; --accent-soft: rgba(8, 145, 178, 0.14); }
+html[data-accentcolor="orange"]  { --accent: #EA580C; --accent-soft: rgba(234, 88, 12, 0.14); }
+html[data-accentcolor="blue"]    { --accent: #2563EB; --accent-soft: rgba(37, 99, 235, 0.14); }
+html[data-accentcolor="lime"]    { --accent: #65A30D; --accent-soft: rgba(101, 163, 13, 0.14); }
+html[data-accentcolor="fuchsia"] { --accent: #C026D3; --accent-soft: rgba(192, 38, 211, 0.14); }
+html[data-accentcolor="slate"]   { --accent: #475569; --accent-soft: rgba(71, 85, 105, 0.14); }
 
-html[data-theme="dark"][data-accentcolor="teal"]   { --accent: #22D3EE; --accent-soft: rgba(34, 211, 238, 0.14); }
-html[data-theme="dark"][data-accentcolor="blue"]   { --accent: #60A5FA; --accent-soft: rgba(96, 165, 250, 0.14); }
-html[data-theme="dark"][data-accentcolor="indigo"] { --accent: #818CF8; --accent-soft: rgba(129, 140, 248, 0.14); }
-html[data-theme="dark"][data-accentcolor="green"]  { --accent: #4ADE80; --accent-soft: rgba(74, 222, 128, 0.14); }
-html[data-theme="dark"][data-accentcolor="orange"] { --accent: #FB923C; --accent-soft: rgba(251, 146, 60, 0.14); }
-html[data-theme="dark"][data-accentcolor="red"]    { --accent: #F87171; --accent-soft: rgba(248, 113, 113, 0.14); }
+html[data-theme="dark"][data-accentcolor="teal"]    { --accent: #22D3EE; --accent-soft: rgba(34, 211, 238, 0.14); }
+html[data-theme="dark"][data-accentcolor="orange"]  { --accent: #FB923C; --accent-soft: rgba(251, 146, 60, 0.14); }
+html[data-theme="dark"][data-accentcolor="blue"]    { --accent: #60A5FA; --accent-soft: rgba(96, 165, 250, 0.14); }
+html[data-theme="dark"][data-accentcolor="lime"]    { --accent: #A3E635; --accent-soft: rgba(163, 230, 53, 0.14); }
+html[data-theme="dark"][data-accentcolor="fuchsia"] { --accent: #E879F9; --accent-soft: rgba(232, 121, 249, 0.14); }
+html[data-theme="dark"][data-accentcolor="slate"]   { --accent: #94A3B8; --accent-soft: rgba(148, 163, 184, 0.14); }
 
 /* ---------- 基础 ---------- */
 *,
@@ -692,7 +692,7 @@ html[data-theme="dark"] .bg-vignette {
 
 .content {
   width: 100%;
-  max-width: 1200px;
+  max-width: 1440px;
   margin: 0 auto;
   padding: 26px 34px 72px;
   min-width: 0;

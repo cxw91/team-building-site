@@ -229,7 +229,7 @@ function paintAccentSelection() {
   $("#accentName").textContent = hit ? hit.name : "默认";
 }
 function applyAccent(id) {
-  const next = ACCENTS.some((a) => a.id === id) ? id : "violet";
+  const next = ACCENTS.some((a) => a.id === id) ? id : "amber";
   document.documentElement.setAttribute("data-accent", next);
   try { localStorage.setItem(ACCENT_KEY, next); } catch (e) {}
   paintAccentSelection();
@@ -265,16 +265,45 @@ $("#accentGrid").addEventListener("keydown", (e) => {
   applyAccent(next.dataset.accent);
 });
 
-/* ---------- 强调色（accent）选择器：与上方「主题色」并列，6 张卡、青碧默认 ---------- */
+/* ---------- 强调色（accent）选择器：与上方「主题色」并列，6 张卡、青碧默认 ----------
+   色相刻意与主题色板错开（暖橙 32° / 松绿 158° / 青碧 188° / 海洋蓝 218° / 星云紫 246° / 玫瑰 337°）：
+   青柠 84° 与品红 292° 是主题色板没有的空档色相；雾蓝 215° 靠低饱和度（S≈0.2）与冷色主题区分。
+   保留青碧 / 暖橙 / 海洋蓝，是为了让暖橙、玫瑰两个主题仍有高对比的干净搭配；
+   其中海洋蓝与主题色板同色相，属于有意保留（见下方色板说明）。
+   已移除靛紫（撞星云紫）、松绿（撞松绿主题与 --ok）、红粉（与 --danger 同值）。 */
 const ACCENT_COLORS = [
-  { id: "teal",   name: "青碧",   light: "#0891B2", dark: "#22D3EE" },
-  { id: "orange", name: "暖橙",   light: "#EA580C", dark: "#FB923C" },
-  { id: "blue",   name: "海洋蓝", light: "#2563EB", dark: "#60A5FA" },
-  { id: "indigo", name: "靛紫",   light: "#4F46E5", dark: "#818CF8" },
-  { id: "green",  name: "松绿",   light: "#16A34A", dark: "#4ADE80" },
-  { id: "red",    name: "红粉",   light: "#DC2626", dark: "#F87171" },
+  { id: "teal",    name: "青碧",   light: "#0891B2", dark: "#22D3EE" },
+  { id: "orange",  name: "暖橙",   light: "#EA580C", dark: "#FB923C" },
+  { id: "blue",    name: "海洋蓝", light: "#2563EB", dark: "#60A5FA" },
+  { id: "lime",    name: "青柠",   light: "#65A30D", dark: "#A3E635" },
+  { id: "fuchsia", name: "品红",   light: "#C026D3", dark: "#E879F9" },
+  { id: "slate",   name: "雾蓝",   light: "#475569", dark: "#94A3B8" },
 ];
 const ACCENT_COLOR_KEY = "tb_accent_color";
+
+/* ---------- 偏好启动自愈：刷新后不丢配置 ----------
+   <head> 引导脚本为防首帧闪烁自己存了一份 id 白名单；它一旦落后于上面的色卡数组，
+   就会把用户存过的合法 id 判成非法、静默退回默认色（反之也会放过已下线的旧 id）。
+   这里以 localStorage 为准、以色卡数组为唯一合法性来源做一次收敛：
+     · 合法 id 但 html 属性被引导改写 → 纠正回用户选过的那张卡
+     · 已下线的旧 id / 脏值          → 收敛到默认并回写，避免每次刷新重复判断
+     · 从没选过（null）              → 保持引导给的默认，不写盘
+   以后增删色卡只需改 app.js 一处，不会再出现「刷新后配色变默认」。 */
+function reconcilePreference(key, attr, ids, fallback) {
+  let saved = null;
+  try { saved = localStorage.getItem(key); } catch (e) {}
+  const next = ids.includes(saved) ? saved : fallback;
+  const root = document.documentElement;
+  if (root.getAttribute(attr) !== next) root.setAttribute(attr, next);
+  if (saved !== null && saved !== next) {
+    try { localStorage.setItem(key, next); } catch (e) {}
+  }
+}
+reconcilePreference(ACCENT_KEY, "data-accent", ACCENTS.map((a) => a.id), "amber");
+reconcilePreference(ACCENT_COLOR_KEY, "data-accentcolor", ACCENT_COLORS.map((a) => a.id), "teal");
+// 主题色色卡在上面已渲染过；属性若被纠正，把选中态重新对一次
+paintAccentSelection();
+
 function currentAccentColor() {
   const id = document.documentElement.getAttribute("data-accentcolor");
   return ACCENT_COLORS.some((a) => a.id === id) ? id : "teal";
