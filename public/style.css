@@ -4980,6 +4980,13 @@ html[data-theme="dark"] .theme-icon--moon {
     transform: none;
   }
 
+  /* 触屏上这四类卡片不做 box-shadow 过渡（.modal-card / .panel 本来就没写过渡）。
+     box-shadow 动画的每一帧都要把整张卡（连同里面的文字）重新绘制、重新光栅化，
+     0.3s 过渡 ≈ 18 帧全卡重绘 —— 与 ring-spin 同一条链路，是点按后文字「闪一下」
+     的另一半来源。改成一步到位：亮起 / 熄灭各只重绘一帧。
+     顺带把粘滞 hover 的复位也变成瞬时，不会再有半秒的辉光拖尾。 */
+  .section, .card, .proj-card, .proj-add { transition: none; }
+
   /* ③ 只有 .fx-active 点亮：取值与桌面 :hover 完全相同的流光边 / 外辉光 / 旋转 */
   .section.fx-active:not(.readonly), .card.fx-active, .proj-card.fx-active,
   .proj-add.fx-active, .panel.fx-active, .modal-card.fx-active {
