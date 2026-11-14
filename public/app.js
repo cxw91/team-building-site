@@ -499,6 +499,14 @@ function toast(msg) {
   const el = $("#toast");
   el.textContent = msg;
   el.classList.remove("hidden");
+  // 单行显示：长消息先逐级压缩字号（下限 10.5px），绝大多数消息都能完整放下；
+  // 仍放不下才由 CSS 的 ellipsis 截断，绝不折行。
+  el.style.fontSize = "";
+  let size = 13;
+  while (size > 10.5 && el.scrollWidth > el.clientWidth) {
+    size -= 0.5;
+    el.style.fontSize = size + "px";
+  }
   clearTimeout(el._t);
   el._t = setTimeout(() => el.classList.add("hidden"), 2200);
 }

@@ -3992,7 +3992,12 @@ html.modal-open .bg-aurora * {
   bottom: calc(30px + env(safe-area-inset-bottom, 0px));
   transform: translateX(-50%);
   z-index: 300;
-  max-width: min(88vw, 420px);
+  /* 强制单行：常规宽度内原样显示；放不下的长消息由 JS 逐级压缩字号，
+     仍放不下才省略号截断，避免折成两行。 */
+  white-space: nowrap;
+  max-width: min(92vw, 620px);
+  overflow: hidden;
+  text-overflow: ellipsis;
   padding: 11px 18px;
   border-radius: 999px;
   /* 跟随主题与主题色：底色用主题浮层令牌（浅色=浅、深色=深），描边用主题色，
