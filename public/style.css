@@ -389,6 +389,12 @@ html[data-theme="dark"][data-accentcolor="slate"]   { --accent: #94A3B8; --accen
 html {
   -webkit-text-size-adjust: 100%;
   scrollbar-gutter: stable;
+  /* 画布底色必须挂在 html 上：body 的背景只在 body 盒子里绘制，
+     而移动端地址栏收起 / 展开、以及顶部下拉回弹时露出来的是「画布」（html）。
+     以前只给 body 设了底色，深色主题下这些区域就回落到浏览器默认白底 ——
+     手机上一收一放地址栏，页面顶部就闪出一条白边。
+     两套主题都读 --bg，切主题时跟着一起变，不必再写第二份颜色值。 */
+  background-color: var(--bg);
 }
 
 /* ---------- 全站统一细滚动条 ----------
@@ -537,13 +543,22 @@ html[data-theme="dark"] .orb-1 { opacity: 0.62; }
 html[data-theme="dark"] .orb-2 { opacity: 0.5; }
 html[data-theme="dark"] .orb-3 { opacity: 0.36; }
 
-/* 深色下光晕容易糊成一片黑：再铺一层固定的径向底色，保证一定看得见光感 */
-html[data-theme="dark"] body {
+/* 深色下光晕容易糊成一片黑：再铺一层径向底色，保证一定看得见光感。
+   这两层原本挂在 body 上、并配 background-attachment: fixed；但移动端浏览器
+   （华为 / 小米自带浏览器、iOS Safari）对 fixed 背景支持很差：地址栏一收一放，
+   背景不跟着可视区重绘，顶部就露出一条白边。
+   现在改挂到本来就是 position: fixed 的 .bg-aurora 上 —— 视觉位置与原来完全一致
+   （都固定在视口），但不再依赖 background-attachment，也不随页面滚动重绘。 */
+html[data-theme="dark"] .bg-aurora {
   background:
     radial-gradient(58% 42% at 84% 2%, rgba(104, 86, 255, 0.42), transparent 70%),
-    radial-gradient(46% 36% at 12% 98%, rgba(200, 72, 162, 0.26), transparent 72%),
-    var(--bg);
-  background-attachment: fixed;
+    radial-gradient(46% 36% at 12% 98%, rgba(200, 72, 162, 0.26), transparent 72%);
+}
+
+/* 深色下 body 只留纯色底：光晕已经交给固定的 .bg-aurora，
+   这里再叠一层会随内容滚动的渐变只会在长列表里多一笔重绘开销。 */
+html[data-theme="dark"] body {
+  background: var(--bg);
 }
 
 .bg-grid {
@@ -4986,9 +5001,14 @@ html[data-theme="dark"] .theme-icon--moon {
   .modal-card.fx-active {
     box-shadow: 0 52px 104px -34px rgba(6, 9, 20, 0.78), 0 0 44px -6px var(--halo);
   }
-  .section.fx-active:not(.readonly), .card.fx-active, .proj-card.fx-active,
-  .proj-add.fx-active { animation-play-state: running; }
-  .panel.fx-active, .modal-card.fx-active { animation-play-state: running, running; }
+  /* 触屏上不再点亮 ring-spin 的旋转（.fx-active 只保留彩色边 + 外辉光，静态不转）。
+     ring-spin 动的是注册过的自定义属性 --ga，conic 渐变写在卡片自己的 background 里：
+     一旦转起来，整张卡片（连同里面的文字）每帧都要重新绘制、重新光栅化。
+     手机上点一下筛选胶囊 → pointerup 给所在 .section 打 .fx-active → 旋转起步的
+     那几帧正好撞上滑块动画，文字就「闪一下」（深色底浅色字下最明显）。
+     保留彩色边框与辉光（视觉上「点哪张卡哪张卡亮」不变），只去掉逐帧重绘的部分。
+     基础规则里各卡片的 animation-play-state 默认就是 paused /
+     running, paused，这里不再覆盖即可。 */
 }
 
 /* ==========================================================================

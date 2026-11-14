@@ -1454,9 +1454,14 @@ function syncNavGlider(animate = true) {
   }
 }
 
-// 窗口跨过断点时侧栏会在「左侧纵列」与「底部横条」之间切换，位移轴跟着变，需要重新落位
+// 窗口跨过断点时侧栏会在「左侧纵列」与「底部横条」之间切换，位移轴跟着变，需要重新落位。
+// 同样只认宽度变化：手机上地址栏收起 / 展开只改高度，页签条几何没变，
+// 没必要为它重算一遍滑块位置（syncNavGlider 内部还有一次强制布局）。
 let navGliderRaf = 0;
+let navViewportW = window.innerWidth;
 window.addEventListener("resize", () => {
+  if (window.innerWidth === navViewportW) return;
+  navViewportW = window.innerWidth;
   if (navGliderRaf) return;
   navGliderRaf = requestAnimationFrame(() => {
     navGliderRaf = 0;
@@ -2469,6 +2474,15 @@ function placeSegGliders(root = document, animate = true) {
     const w = on.offsetWidth;
     const h = on.offsetHeight;
     const prev = group._segPos;
+    // 几何完全没变就直接返回：不再写 CSS 变量、不再强制同步布局。
+    // 手机上一收一放地址栏就会触发 resize，而地址栏只改视口高度、不改滑块几何；
+    // 以前这里每次 resize 都要 add/remove 一遍 .seg-instant 再 void offsetWidth，
+    // 等于把整篇文档重新布局一次，若正好落在点按后滑块动画的头几帧上，
+    // 动画会被截断、文本重新光栅化 —— 观感就是「筛选卡片的文字闪一下」。
+    if (prev && Math.abs(prev.x - x) < 0.5 && Math.abs(prev.y - y) < 0.5 &&
+        Math.abs(prev.w - w) < 0.5 && Math.abs(prev.h - h) < 0.5) {
+      return;
+    }
     const flip = animate && !!prev && prev.w > 0 && w > 0 &&
       (Math.abs(prev.x - x) > 0.5 || Math.abs(prev.y - y) > 0.5 || Math.abs(prev.w - w) > 0.5);
 
@@ -2487,7 +2501,7 @@ function placeSegGliders(root = document, animate = true) {
       group.style.setProperty("--seg-gy", y + "px");
       group.style.setProperty("--seg-sx", "1");
     }
-    group._segPos = { x, y, w };
+    group._segPos = { x, y, w, h };
   });
 }
 
@@ -2657,8 +2671,14 @@ function refreshOpenDropdowns() {
   });
 }
 window.addEventListener("scroll", refreshOpenDropdowns, { passive: true });
+// 移动端「地址栏收起 / 展开」也会触发 resize，但只改视口高度，不影响分段控件的几何。
+// 这里只在宽度真的变了（跨断点、旋转屏幕、换行重排）时才重新落位，
+// 免得每次地址栏滑动都白跑一遍强制同步布局。
+let segViewportW = window.innerWidth;
 window.addEventListener("resize", () => {
   refreshOpenDropdowns();
+  if (window.innerWidth === segViewportW) return;
+  segViewportW = window.innerWidth;
   placeSegGliders(document, false); // 宽度 / 换行变化后重新落位，不播滑动
 });
 
