@@ -46,8 +46,10 @@
   /* 弹窗卡片底色：深色主题下比 --surface 亮一档，所以单独一个令牌，
      卡片和它底部的「关闭 / 确定」吸底条都用它，避免出现色块拼接 */
   --modal-surface: #ffffff;
-  /* 弹窗滚动条（细、随主题）：浅色用深半透明，深色用浅半透明 */
-  --modal-scroll: rgba(15, 22, 48, 0.22);
+  /* 全站细滚动条（所有滚动容器共用）：浅色用深半透明，深色用浅半透明。
+     只在一处定义，避免部分容器退回系统默认深灰粗条、压住卡片圆角。 */
+  --scroll-thumb: rgba(15, 22, 48, 0.22);
+  --scroll-thumb-hover: rgba(15, 22, 48, 0.4);
 
   /* 线与字 */
   --line: rgba(15, 22, 48, 0.085);
@@ -64,6 +66,8 @@
   --brand-rgb: 109 91 246;
   --brand-soft: rgb(var(--brand-rgb) /  0.1);
   --brand-line: rgb(var(--brand-rgb) /  0.32);
+  /* 下拉选项悬停：中性弱高亮，不带品牌色相，和选中态的 --brand-soft 明确区分 */
+  --opt-hover: rgba(15, 22, 48, 0.055);
   /* 青色辅色（--accent，即用户口中的「强调色」）：独立于品牌族的区分信号，
      用于奖金条（.task-seg.bonus）与采购清单的「xx 接单」认领标签（.tag.claim）。
      青碧为默认强调色（浅 #0891B2 / 深 #22D3EE），并可在「设置」弹窗用 6 张色卡切换，
@@ -145,7 +149,6 @@
   --side-muted: #444d6a;
   --side-line: rgba(15, 22, 48, 0.13);
   --side-hover: rgba(15, 22, 48, 0.075);
-  --side-scroll: rgba(15, 22, 48, 0.24);
   --side-active-bg: linear-gradient(100deg, rgb(var(--brand-rgb) /  0.2), rgb(var(--brand-rgb) /  0.14));
   --side-active-ring: rgb(var(--brand-rgb) /  0.32);
   --side-active-sh: 0 12px 24px -18px rgba(78, 62, 190, 0.75);
@@ -178,6 +181,9 @@
      被 impeccable 标记为「bounce easing」—— 回弹感显廉价、过时。改为无回弹的
      ease-out（结尾干净收住），保留轻快的入场节奏但不弹。 */
   --ease-pop: cubic-bezier(0.22, 1, 0.36, 1);
+  /* 位移动画专用：--ease-pop 前 30% 时间就走完约 3/4 距离，后面长时间「爬行」，
+     滑块会显得冲一下再顿住。这条曲线加减速均衡，整段位移匀速感更强、更顺滑。 */
+  --ease-slide: cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 html[data-theme="dark"] {
@@ -199,7 +205,8 @@ html[data-theme="dark"] {
   --ghost-hover: #2a3350;
   --input-bg: #0f1422;
   --modal-surface: #182034;
-  --modal-scroll: rgba(255, 255, 255, 0.2);
+  --scroll-thumb: rgba(255, 255, 255, 0.2);
+  --scroll-thumb-hover: rgba(255, 255, 255, 0.36);
 
   --line: rgba(255, 255, 255, 0.075);
   --line-strong: rgba(255, 255, 255, 0.16);
@@ -213,6 +220,7 @@ html[data-theme="dark"] {
   --brand-rgb: 139 124 255;
   --brand-soft: rgba(139, 124, 255, 0.16);
   --brand-line: rgba(139, 124, 255, 0.4);
+  --opt-hover: rgba(255, 255, 255, 0.07);
   /* 深色下的标签条：底色不能照搬浅色的浅紫（会像一块发光补丁），
      改成半透明品牌紫叠在深色侧栏上；文字换成亮紫，保证对比度。 */
   --who-strip-bg: rgba(139, 124, 255, 0.16);
@@ -252,7 +260,6 @@ html[data-theme="dark"] {
   --side-muted: rgba(232, 235, 247, 0.56);
   --side-line: rgba(255, 255, 255, 0.075);
   --side-hover: rgba(255, 255, 255, 0.055);
-  --side-scroll: rgba(255, 255, 255, 0.16);
   --side-active-bg: linear-gradient(100deg, rgb(var(--brand-rgb) /  0.34), rgb(var(--brand-rgb) /  0.1));
   --side-active-ring: rgba(255, 255, 255, 0.1);
   --side-active-sh: 0 10px 24px -16px rgb(var(--brand-rgb) /  0.95);
@@ -382,6 +389,48 @@ html[data-theme="dark"][data-accentcolor="slate"]   { --accent: #94A3B8; --accen
 html {
   -webkit-text-size-adjust: 100%;
   scrollbar-gutter: stable;
+}
+
+/* ---------- 全站统一细滚动条 ----------
+   此前只有 .side-nav / .modal-card 定制过滚动条，其余自绘滚动容器（家庭下拉、
+   采购明细筛选下拉、建议列表、口令列表等）沿用系统默认深灰粗条：矩形 thumb
+   直接压在圆角上，看起来像卡片右边多出一条竖杠。这里一次性统一为
+   「6px 视觉宽 + 主题色半透明 + 圆角」，并让圆角浮层的滚动条上下留白，
+   thumb 不再顶穿圆角弧线。
+
+   Chrome 121+ 里 scrollbar-width / scrollbar-color 只要不是 auto，
+   ::-webkit-scrollbar 就会被忽略，圆角与留白随之失效；因此标准属性只在
+   不认识该伪元素的浏览器（Firefox）里通过 @supports 兜底启用。 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  /* background 简写会重置 background-clip，这里必须重新声明 */
+  background: var(--scroll-thumb-hover);
+  background-clip: padding-box;
+}
+/* 圆角浮层：滚动条上下各留一段空白，避开 14px / 24px 圆角 */
+:where(.family-menu, .shop-select-menu, .combo-list)::-webkit-scrollbar-track {
+  margin: 10px 0;
+}
+.modal-card::-webkit-scrollbar-track {
+  margin: 16px 0;
+}
+@supports not selector(::-webkit-scrollbar) {
+  html {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scroll-thumb) transparent;
+  }
 }
 
 body {
@@ -931,16 +980,6 @@ html[data-theme="dark"] .bg-vignette {
   padding: 2px 12px 14px;
   overflow-y: auto;
   overflow-x: hidden;
-  scrollbar-width: thin;
-  scrollbar-color: var(--side-scroll) transparent;
-}
-
-.side-nav::-webkit-scrollbar {
-  width: 4px;
-}
-.side-nav::-webkit-scrollbar-thumb {
-  background: var(--side-scroll);
-  border-radius: 4px;
 }
 
 .nav-item,
@@ -3145,6 +3184,8 @@ html[data-theme="dark"] .tone-red { color: #ff8fa5; }
   background: var(--brand);
 }
 .shop-seg {
+  position: relative; /* 整组共用滑块的定位基准 */
+  isolation: isolate; /* 把滑块 / 按钮的 z-index 关在组内，不干扰卡片与下拉层级 */
   display: inline-flex;
   flex-wrap: wrap;
   gap: 3px;
@@ -3154,6 +3195,8 @@ html[data-theme="dark"] .tone-red { color: #ff8fa5; }
   background: var(--surface-3);
 }
 .seg-btn {
+  position: relative;
+  z-index: 1; /* 压在整组共用的滑块之上，文字始终是最高层 */
   appearance: none;
   border: 1px solid transparent;
   border-radius: 999px;
@@ -3166,8 +3209,11 @@ html[data-theme="dark"] .tone-red { color: #ff8fa5; }
   font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
-  transition: background 0.18s var(--ease), color 0.18s var(--ease),
-    border-color 0.18s var(--ease), box-shadow 0.18s var(--ease);
+  /* 按钮自身不再画选中背景：整组共用一个滑块滑过来。只保留文字颜色与
+     点按缩放的过渡，切出选中态时不会再有图层淡出 = 不闪。 */
+  /* 切出选中态：白字尽快退回常规色，别在滑块离开后还留一块白字 */
+  transition: color 0.14s var(--ease-slide), border-color 0.2s var(--ease),
+    transform 0.18s var(--ease-pop);
 }
 /* 桌面端：底色只由「是否选中」决定，鼠标悬停一律不改底色。
    以前 :hover:not(:disabled) 的特异性（3）高于 .on（2），会把已选中的深紫渐变实心块
@@ -3180,15 +3226,64 @@ html[data-theme="dark"] .tone-red { color: #ff8fa5; }
   border-color: var(--brand-line);
 }
 .seg-btn.on {
-  background: linear-gradient(135deg, var(--brand-ink), var(--brand));
   color: #fff;
-  font-weight: 700;
-  box-shadow: 0 6px 16px -8px var(--brand), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  /* 切入选中态：白字延后到滑块滑过大半才开始渐入，滑块到达时才完全变白。
+     若与位移同时开始，浅色主题下会有约 150ms 白字压在浅灰轨道上看不清，
+     看着就像切换时「闪一下」。两段 0.14s / 0.16s 合计仍与滑块 0.3s 同步。 */
+  transition: color 0.14s var(--ease-slide) 0.16s,
+    border-color 0.2s var(--ease), transform 0.18s var(--ease-pop);
+  /* 选中块由整组滑块绘制，按钮只留白字；细描边保留「更重一点」的观感，
+     且不改变文字宽度，切换时零位移 */
+  text-shadow: 0 0 0.35px rgba(255, 255, 255, 0.6);
 }
-/* 深色下 brand-ink 偏亮、白字对比不足；用 color-mix 把品牌色压暗一档做渐变起点，
-   既保留白字对比，又跟随主题色（单色族）——不再写死 #6d5bf6 */
 html[data-theme="dark"] .seg-btn.on {
-  background: linear-gradient(135deg, color-mix(in srgb, var(--brand) 64%, #000), var(--brand));
+  text-shadow: 0 0 0 rgba(255, 255, 255, 0);
+}
+/* 点按反馈：轻微下沉后回弹 */
+.seg-btn:active:not(:disabled) {
+  transform: scale(0.955);
+}
+
+/* ---------- 分段控件滑块 ----------
+   整组共用一个渐变块（挂在轨道的 ::before 上）。JS 写入目标尺寸 --seg-gw/gh，
+   位移与宽度变化全部编码进一条 transform：translate3d 定位置、scaleX 补偿宽度
+   （FLIP：起点 scaleX = 旧宽/新宽，终点 = 1）。因此 width / height 不参与过渡，
+   300ms 内只有 transform 在变 —— 全程走合成层，不再逐帧 layout + 重绘渐变与阴影。
+   终点 scaleX=1 时元素就是标准 999px 胶囊，外观与直接改 width 完全一致。
+   按钮自己不画背景，旧按钮切出选中态时没有图层淡出 = 不闪。 */
+.shop-seg::before,
+.split-switch-seg::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 0;
+  width: var(--seg-gw, 0px);
+  height: var(--seg-gh, 0px);
+  border-radius: 999px;
+  background: linear-gradient(135deg, var(--brand-ink), var(--brand));
+  box-shadow: 0 6px 16px -8px var(--brand), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+  transform-origin: left center; /* scaleX 以左边缘为锚，translate 的 x 即滑块左边 */
+  transform: translate3d(var(--seg-gx, 0px), var(--seg-gy, 0px), 0)
+    scaleX(var(--seg-sx, 1));
+  transition: transform 0.3s var(--ease-slide);
+  will-change: transform; /* 独立合成层：位移 / 缩放不牵动轨道与卡片重绘 */
+  pointer-events: none;
+}
+/* 首次定位 / 整页重建 / 窗口尺寸变化 / FLIP 起点：直接落位，不让滑块从 0 宽「长」出来 */
+.shop-seg.seg-instant::before,
+.split-switch-seg.seg-instant::before {
+  transition: none;
+}
+/* 深色下 --brand 是浅色档高亮值，整块铺满会过曝：两端都压进深色区间，
+   发光与内高光同步收敛（0.28 的白色顶边沿圆角会拉出两条浅色竖线） */
+html[data-theme="dark"] .shop-seg::before,
+html[data-theme="dark"] .split-switch-seg::before {
+  background: linear-gradient(135deg,
+    color-mix(in srgb, var(--brand) 42%, #000),
+    color-mix(in srgb, var(--brand) 66%, #000));
+  box-shadow: 0 5px 14px -9px rgb(var(--brand-rgb) / 0.45),
+    inset 0 1px 0 rgba(255, 255, 255, 0.08);
 }
 .seg-btn:focus-visible {
   outline: 2px solid var(--brand);
@@ -3254,6 +3349,18 @@ html[data-theme="dark"] .seg-btn.on {
   background: var(--surface);
   box-shadow: var(--sh-2);
 }
+/* 选项不足一屏时（只有一两个家庭）不该出现滚动条：JS 量到内容没有溢出就打上
+   这个标记直接关掉滚动，顺带收回 Chromium 为 overflow-y:auto 预留的滚动槽宽度。
+   真正需要滚动时标记会被移除，滚动条照常出现。 */
+.shop-select-menu[data-noscroll] {
+  overflow-y: hidden;
+}
+/* 自适应翻转：JS 量到下方被固定页签条挤没空间时打上 data-drop="up"，
+   面板改从触发器上方展开；高度同样由 JS 按可用空间收敛，不越过顶栏 / 页签栏。 */
+.shop-select-menu[data-drop="up"] {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
 /* 只有用户主动打开才播入场动画；DOM 重建恢复开合时保持静态，避免切页签闪一下 */
 .shop-select-menu.enter { animation: menu-in 0.18s var(--ease) both; }
 .shop-select-opt {
@@ -3271,13 +3378,22 @@ html[data-theme="dark"] .seg-btn.on {
   cursor: pointer;
   transition: background 0.16s, color 0.16s;
 }
-.shop-select-opt:hover,
-.shop-select-opt:focus-visible {
-  background: var(--brand-soft);
+/* 悬停只给中性弱高亮，别再和选中态共用 --brand-soft：
+   以前两者同色，鼠标划过就像又多选中了一项（「陈」和「李」都是紫底）。 */
+.shop-select-opt:hover {
+  background: var(--opt-hover);
   color: var(--text);
-  outline: none;
 }
-.shop-select-opt.on {
+/* 键盘焦点单独补一圈品牌色细框：中性底太淡，键盘用户看不出落点 */
+.shop-select-opt:focus-visible {
+  background: var(--opt-hover);
+  color: var(--text);
+  outline: 2px solid var(--brand-line);
+  outline-offset: -2px;
+}
+/* 选中项即便被悬停 / 聚焦，也保持品牌紫底 + 品牌色字 + 左侧竖线 */
+.shop-select-opt.on,
+.shop-select-opt.on:hover {
   background: var(--brand-soft);
   color: var(--brand-ink);
   font-weight: 700;
@@ -3305,7 +3421,9 @@ html[data-theme="dark"] .seg-btn.on {
   /* 窄屏不卡片化，避免额外 padding 把 4 个接单按钮挤成两行 */
   .shop-seg-line { padding: 0; border: 0; background: transparent; box-shadow: none; }
   .shop-filter-label { min-width: 28px; gap: 4px; }
-  .shop-seg { flex: 1 1 220px; border-radius: var(--r-md); }
+  /* 只改窄屏下的伸缩，圆角沿用基础规则的 999px：轨道与胶囊按钮保持同一种全圆角外观，
+     和电脑端一致。以前这里压成 var(--r-md)，会出现「小圆角轨道套全圆角按钮」的错位。 */
+  .shop-seg { flex: 1 1 220px; }
   .seg-btn { flex: 1 1 auto; padding: 5px 9px; }
   .shop-filter-line > .shop-select,
   .shop-filter-line > input,
@@ -3439,8 +3557,14 @@ html[data-theme="dark"] .seg-btn.on {
 .combo-toggle {
   position: absolute;
   right: 5px;
-  top: 50%;
-  transform: translateY(-50%);
+  /* 垂直居中不用 top:50% + transform:translateY(-50%)：
+     查看已结束项目时 applyReadonly() 会把这个 button 设为 disabled，而全局
+     button:disabled { transform: none !important } 会把 translateY 抹掉，
+     只剩 top:50% —— 整个箭头下移半个按钮高度（14px），贴到输入框下沿。
+     改用 top/bottom + auto margin 居中，完全不依赖 transform，禁用态也稳定。 */
+  top: 0;
+  bottom: 0;
+  margin: auto 0;
   width: 28px;
   height: 28px;
   display: grid;
@@ -3640,22 +3764,6 @@ html.modal-open .bg-aurora * {
   overflow-y: auto;
   overscroll-behavior: contain;
   -webkit-overflow-scrolling: touch;
-  scrollbar-width: thin;
-  scrollbar-color: var(--modal-scroll) transparent;
-}
-
-.modal-card::-webkit-scrollbar {
-  width: 8px;
-}
-.modal-card::-webkit-scrollbar-track {
-  background: transparent;
-}
-.modal-card::-webkit-scrollbar-thumb {
-  background: var(--modal-scroll);
-  border-radius: 8px;
-}
-.modal-card::-webkit-scrollbar-thumb:hover {
-  background: rgba(127, 127, 127, 0.55);
 }
 
 .modal-card:hover {
@@ -3787,6 +3895,8 @@ html.modal-open .bg-aurora * {
   background: var(--brand);
 }
 .split-switch-seg {
+  position: relative; /* 与 .shop-seg 共用同一套滑块规则 */
+  isolation: isolate;
   display: inline-flex;
   flex-wrap: wrap;
   gap: 3px;
@@ -4801,32 +4911,19 @@ html[data-theme="dark"] .theme-icon--moon {
   }
 }
 
-/* ---------- 手机端：选中统一底色 ---------- */
-/* 触屏没有真正的 hover：点一下之后 :hover 会一直粘在最后点过的元素上，于是
-   同一个筛选条里，一个选中项显示 .on 的深紫渐变发光块、另一个却显示 :hover 的浅紫高亮
-   （hover 规则特异性更高，把 .on 盖掉了），两种选中样式并存。
-   这里只收口选中底色：一律浅紫底（截图里「已接单」的样子），未选中项不再因残留 hover 变亮。
-   卡片的流光边框 / 外辉光 / 旋转全部常亮，只有点击位置周围的径向光斑关掉，见下方「真触屏」专用块。 */
+/* ---------- 真触屏 / 窄屏：只清掉粘住的 hover ---------- */
+/* 触屏没有真正的 hover：点一下之后 :hover 会一直粘在最后点过的元素上，
+   基础规则给未选中按钮的文字 / 描边反馈就会留着，看起来像「半个选中态」。
+   这里只把残留 hover 复位成常态。
+   选中态（.seg-btn.on）不再覆盖：与电脑端一致，白字 + 发光渐变块；
+   渐变块现在由整组共用的滑块（.shop-seg::before）绘制，会滑动到当前选中项，
+   深色主题走 html[data-theme="dark"] .shop-seg::before 的压暗渐变。 */
 @media (hover: none) and (pointer: coarse), (max-width: 700px) {
-  /* 选中态：浅紫底 + 品牌色文字 + 1px 品牌色细边，不要深紫渐变实心与发光阴影。
-     筛选条「状态 / 接单」和结算页「按家庭数 / 按人数」共用这一套。 */
-  .seg-btn.on,
-  .seg-btn.on:hover:not(:disabled),
-  html[data-theme="dark"] .seg-btn.on,
-  html[data-theme="dark"] .seg-btn.on:hover:not(:disabled) {
-    background: var(--brand-soft);
-    color: var(--brand-ink);
-    border-color: var(--brand-line);
-    box-shadow: none;
-  }
-  /* 未选中项：残留的 :hover 不该让「全部」这类按钮看起来像被选中 */
   .seg-btn:hover:not(:disabled):not(.on) {
     background: transparent;
     color: var(--text-2);
     border-color: transparent;
-    box-shadow: none;
   }
-
 }
 
 /* ---------- 真触屏：只有「当前点击的卡片」激活光效 ---------- */

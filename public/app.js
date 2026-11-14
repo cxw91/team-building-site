@@ -1911,6 +1911,7 @@ function paintTab(tab) {
   }
   try {
     paint();
+    placeSegGliders(c); // 整页重建：.no-tr 期间无动画落位，滑块不会从 0 宽长出来
     applyReadonly();
     restoreSuggestOpen(keepSuggest);
     reapplyInflight(); // 重画后把在途请求的加载态刷回到新元素上
@@ -2271,6 +2272,7 @@ function paintCurrentTab() {
   try {
     const keepSuggest = captureSuggestOpen(); // 同上：局部重画也别把正开着的候选框关掉
     paint();
+    placeSegGliders(document); // 局部重画整页：新节点无动画落位
     applyReadonly();
     restoreSuggestOpen(keepSuggest);
     reapplyInflight(); // 同上
@@ -2439,6 +2441,56 @@ async function fetchShopping(signal) {
   return loadPageData("shopping", signal);
 }
 
+// ---------- 分段控件滑块 ----------
+// 整组（.shop-seg / .split-switch-seg）共用一个渐变块。宽度变化用 FLIP 编码进
+// transform 的 scaleX，动画期间只有 transform 在变，全程走合成层：
+//   起点 = 旧位置 + scaleX(旧宽 / 新宽) → 视觉宽度仍是旧宽，衔接无跳变
+//   终点 = 新位置 + scaleX(1)           → 标准胶囊，与直接改 width 逐像素一致
+// 位置读 offsetLeft/Top、尺寸读 offsetWidth/Height：这些是布局值，不受按钮
+// :active 的 scale(0.955) 影响（getBoundingClientRect 会读到缩放后的框，触屏上
+// :active 残留会让滑块落点偏 1px，且松开后不会自动回来）。
+// 首次定位 / 整页重建 / resize 必须关掉过渡，否则滑块会从 0 宽「长」出来。
+function placeSegGliders(root = document, animate = true) {
+  const scope = root && root.querySelectorAll ? root : document;
+  scope.querySelectorAll(".shop-seg, .split-switch-seg").forEach((group) => {
+    const on = group.querySelector(".seg-btn.on");
+    if (!on) return;
+    let x, y;
+    if (on.offsetParent === group) {
+      // offsetLeft/Top 相对 offsetParent 的 padding edge，已扣掉轨道 1px 边框
+      x = on.offsetLeft;
+      y = on.offsetTop;
+    } else {
+      const gr = group.getBoundingClientRect();
+      const br = on.getBoundingClientRect();
+      x = br.left - gr.left - group.clientLeft;
+      y = br.top - gr.top - group.clientTop;
+    }
+    const w = on.offsetWidth;
+    const h = on.offsetHeight;
+    const prev = group._segPos;
+    const flip = animate && !!prev && prev.w > 0 && w > 0 &&
+      (Math.abs(prev.x - x) > 0.5 || Math.abs(prev.y - y) > 0.5 || Math.abs(prev.w - w) > 0.5);
+
+    // 先无过渡地提交「起点」（或最终落位），强制一次样式计算后再放开 transition，
+    // 否则浏览器会把起点与终点合并成一次跳变，FLIP 就不生效了。
+    group.classList.add("seg-instant");
+    group.style.setProperty("--seg-gw", w + "px");
+    group.style.setProperty("--seg-gh", h + "px");
+    group.style.setProperty("--seg-gx", (flip ? prev.x : x) + "px");
+    group.style.setProperty("--seg-gy", (flip ? prev.y : y) + "px");
+    group.style.setProperty("--seg-sx", flip ? (prev.w / w).toFixed(4) : "1");
+    void group.offsetWidth;
+    group.classList.remove("seg-instant");
+    if (flip) {
+      group.style.setProperty("--seg-gx", x + "px");
+      group.style.setProperty("--seg-gy", y + "px");
+      group.style.setProperty("--seg-sx", "1");
+    }
+    group._segPos = { x, y, w };
+  });
+}
+
 // ---------- 采购清单筛选 ----------
 // 条件只存在内存里：切页签保持，切项目 / 退出登录（resetTabCache）与刷新页面复位，
 // 免得带着上一个项目的条件进入新项目却看到空列表。
@@ -2537,6 +2589,79 @@ function shopFamilyOptionsHtml() {
 function shopFamilySignature() {
   return shopFilterFamilies().map((r) => String(r.id) + ":" + r.name).join("|");
 }
+// ---------- 自绘下拉：按可用空间决定展开方向与高度 ----------
+// 窄屏下顶部工具条与底部页签条都是 fixed（z-index 70），而菜单所在 .section
+// 只在卡片内部提到 z-index 30；菜单向下展开到页签条位置时，最后几个家庭会被整条盖住。
+// 这里在打开 / 页面滚动时量一次触发器位置：下方够就向下、不够且上方更宽就向上，
+// 并把 max-height 收敛到实际可用高度，让面板始终落在「顶栏下沿 ~ 页签条上沿」之间，
+// 不靠提升层级硬压固定栏。采购清单与采购明细两组下拉共用。
+const DROP_GAP = 6;    // 与 .shop-select-menu 的 top / bottom 偏移一致
+const DROP_MAX = 260;  // 与 CSS 的 max-height 一致
+const DROP_MIN = 140;  // 下方不足这个高度（约 3 项）就考虑翻到上方
+
+// 固定栏只在窄屏才是 fixed；取其靠内的一条边作为可用区边界，桌面端返回 null。
+function dropFixedEdge(sel, edge) {
+  const el = $(sel);
+  if (!el || getComputedStyle(el).position !== "fixed") return null;
+  const r = el.getBoundingClientRect();
+  return edge === "top" ? r.bottom : r.top;
+}
+function placeDropdown(trigger, menu) {
+  if (!trigger || !menu) return;
+  // 先解除限高与「无需滚动」标记，量到的才是内容自然高度。
+  // 用 none（而不是清空内联样式）是为了同时盖掉 CSS 里的 max-height:260px，
+  // 否则选项多时 offsetHeight 会被截成 260，测不出真实内容高度。
+  menu.style.maxHeight = "none";
+  delete menu.dataset.noscroll;
+  const vh = document.documentElement.clientHeight;
+  const r = trigger.getBoundingClientRect();
+  let headBottom = dropFixedEdge(".side-top", "top");
+  if (headBottom == null) headBottom = dropFixedEdge(".topbar", "top");
+  const navTop = dropFixedEdge(".side-nav", "bottom");
+  const topLimit = (headBottom == null ? 0 : headBottom) + 8;
+  const bottomLimit = (navTop == null || navTop <= 0 || navTop >= vh ? vh : navTop) - 8;
+  const below = bottomLimit - r.bottom - DROP_GAP;
+  const above = r.top - DROP_GAP - topLimit;
+  // offsetHeight 含 1px 上下边框；以前用 scrollHeight（不含边框）当自然高度，
+  // 再原样写回 border-box 的 max-height，菜单就永远差 2px 放不下，
+  // overflow-y:auto 于是画出一条几乎满高的 thumb —— 只有一两个家庭也显示滚动条。
+  const natural = menu.offsetHeight || DROP_MAX;
+  // 优先选能完整放下内容的方向；两侧都放不下时才退回「下方不足阈值就上翻」。
+  let dir = "down", avail = below;
+  if (below >= natural) { dir = "down"; avail = below; }
+  else if (above >= natural) { dir = "up"; avail = above; }
+  else if (below < DROP_MIN && above > below) { dir = "up"; avail = above; }
+  // 放得下就完全不限高：菜单按内容自适应，overflow-y:auto 自然不会画滚动条；
+  // 只有空间真的不够时才限高，此时的滚动条才是必要的。
+  const room = Math.min(DROP_MAX, Math.max(72, Math.floor(avail)));
+  menu.style.maxHeight = natural <= room ? "" : room + "px";
+  menu.dataset.drop = dir;
+  // 兜底：亚像素 / padding 造成的 1~2px 溢出也会让 Chromium 画出 thumb
+  if (menu.scrollHeight <= menu.clientHeight + 1) menu.dataset.noscroll = "";
+}
+function clearDropdownPlacement(menu) {
+  if (!menu) return;
+  menu.style.maxHeight = "";
+  delete menu.dataset.drop;
+  delete menu.dataset.noscroll;
+}
+// 页面滚动 / 窗口缩放后触发器位置会变，打开中的面板要重新量一次。
+// 不捕获 scroll：菜单内部自己滚动时不重算，避免限高变化引起跳动。
+function refreshOpenDropdowns() {
+  [
+    ["#shop-filter-family", "#shop-family-menu"],
+    ["#pur-filter-family", "#pur-family-menu"],
+  ].forEach(([t, m]) => {
+    const menu = $(m);
+    if (menu && !menu.hidden) placeDropdown($(t), menu);
+  });
+}
+window.addEventListener("scroll", refreshOpenDropdowns, { passive: true });
+window.addEventListener("resize", () => {
+  refreshOpenDropdowns();
+  placeSegGliders(document, false); // 宽度 / 换行变化后重新落位，不播滑动
+});
+
 // 面板开合统一走这里：paint / 后台刷新重建 DOM 后按 state 恢复开合，
 // 不播入场动画、不抢焦点，避免切回本页时「闪一下」。
 function paintShopFamilyOpen(focus = false, animate = false) {
@@ -2544,6 +2669,8 @@ function paintShopFamilyOpen(focus = false, animate = false) {
   if (!menu || !trigger) return;
   const want = !!state.shopFamilyOpen && !trigger.disabled;
   menu.hidden = !want;
+  if (want) placeDropdown(trigger, menu);
+  else clearDropdownPlacement(menu);
   trigger.setAttribute("aria-expanded", want ? "true" : "false");
   const sec = trigger.closest(".section");
   if (sec) sec.classList.toggle("has-open-menu", want);
@@ -2667,6 +2794,10 @@ function renderShopRows(force = false) {
     if (q && u) draft = { qty: q.value, unit: u.value };
     if (!shown.some((i) => Number(i.id) === Number(editId))) state.editingShop = null;
   }
+  // 先同步筛选控件、让滑块在「干净布局」上起帧：placeSegGliders 要读 offsetLeft，
+  // 若排在 list.innerHTML 之后，浏览器必须先完成整张新列表的布局才能量位置，
+  // 这次强制同步布局正好压在动画第一帧上，是切换时顿感的另一个来源。
+  syncShopFilterControls(force);
   list.innerHTML = shown.length
     ? shown.map(shopRowHtml).join("")
     : `<div class="empty shop-empty">${all.length ? "没有符合条件的采购项" : "清单为空"}</div>`;
@@ -2674,15 +2805,15 @@ function renderShopRows(force = false) {
     const q = $("#shop-edit-qty-" + editId), u = $("#shop-edit-unit-" + editId);
     if (q && u) { q.value = draft.qty; u.value = draft.unit; }
   }
-  const waiting = shown.filter((i) => i.status === "待购").length;
-  const claimed = shown.filter((i) => i.claimed_family_id).length;
+  // 右上角统计是整张清单的概览，固定按全量口径，不随筛选条件变化：
+  // 筛选只影响下方列表行，切换「状态 / 接单 / 家庭」时这块文字保持稳定，
+  // 也不会因为字数变化让标题栏抖一下。数据本身增删时数字照常更新。
+  const waiting = all.filter((i) => i.status === "待购").length;
+  const claimed = all.filter((i) => i.claimed_family_id).length;
   const count = $("#shop-count");
   if (count) {
-    count.textContent = shopFilterActive()
-      ? `显示 ${shown.length} / 共 ${all.length} 项 · ${waiting} 项待购 · ${claimed} 项已被接单`
-      : `共 ${all.length} 项 · ${waiting} 项待购 · ${claimed} 项已被接单`;
+    count.textContent = `共 ${all.length} 项 · ${waiting} 项待购 · ${claimed} 项已被接单`;
   }
-  syncShopFilterControls(force);
   disableEditControlsIn(list); // 局部重绘出的新控件也要遵守只读
 }
 
@@ -2738,6 +2869,8 @@ function syncShopFilterControls(force = false) {
   if (q && q.value !== String(f.q || "") && (force || document.activeElement !== q)) q.value = f.q || "";
   const clear = bar.querySelector("[data-action='shop-filter-clear']");
   if (clear) clear.hidden = !shopFilterActive();
+  // 选中态切完再把滑块滑到新位置（首次定位会自动关掉过渡）
+  placeSegGliders(bar);
 }
 
 // ---------- 物品名称候选框（自绘下拉 · 只能选、不能新增） ----------
@@ -3107,6 +3240,8 @@ function paintPurFamilyOpen(focus = false, animate = false) {
   if (!menu || !trigger) return;
   const want = !!state.purFamilyOpen && !trigger.disabled;
   menu.hidden = !want;
+  if (want) placeDropdown(trigger, menu);
+  else clearDropdownPlacement(menu);
   trigger.setAttribute("aria-expanded", want ? "true" : "false");
   const sec = trigger.closest(".section");
   if (sec) sec.classList.toggle("has-open-menu", want);
@@ -3660,6 +3795,17 @@ $("#content").addEventListener("click", async (e) => {
         });
       });
       if (!ok) return; // 取消：口径不变，也不必重渲染
+      // 结算页末尾会整页 render()，DOM 重建后滑块没有「上一个位置」可滑。
+      // 这里先把选中态挪到新按钮手动滑一次，重建时再由 paintTab 无动画落位到同一位置。
+      const seg = btn.closest(".split-switch-seg");
+      if (seg) {
+        seg.querySelectorAll(".seg-btn").forEach((b) => {
+          const on = b === btn;
+          b.classList.toggle("on", on);
+          b.setAttribute("aria-pressed", on ? "true" : "false");
+        });
+        placeSegGliders(seg.parentElement || document);
+      }
       state.tabAt.settlement = 0; // 概览与结算都吃 /settlement，切过去时立即重取
       state.tabAt.overview = 0;
       toast("分摊方式已改为「" + label + "」");
