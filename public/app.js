@@ -1,4 +1,11 @@
 // 团建管理 —— 前端逻辑（多项目版）
+
+// 排障开关：URL 带 ?fx=off 时一键停掉全站装饰动画 / 过渡，用于判定「闪」
+// 是否由页面动画引起（带参数仍闪 = 与页面动画无关）。正常访问完全不生效。
+if (new URLSearchParams(location.search).get("fx") === "off") {
+  document.documentElement.classList.add("fx-off");
+}
+
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) =>
   String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));

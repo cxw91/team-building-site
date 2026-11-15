@@ -442,7 +442,12 @@ html {
 body {
   margin: 0;
   min-height: 100vh;
-  min-height: 100dvh;
+  /* 视口高度用「静态小视口」而非 100dvh：dvh 会随地址栏收放实时变化，
+     每次变化都让整篇文档重新布局（文字位置、亚像素取整全变），是手机上
+     「地址栏露出时切胶囊文字闪一下」的放大器。100svh 是固定值（地址栏
+     展开时的可视高度），地址栏怎么动文档高度都不变；老浏览器不认 svh
+     时回落上一行的 100vh，同样是静态的。全站 5 处 vh 高度统一走这里。 */
+  min-height: 100svh;
   overflow-x: hidden;
   background: var(--bg);
   color: var(--text);
@@ -600,7 +605,7 @@ html[data-theme="dark"] .bg-vignette {
   display: grid;
   grid-template-columns: 268px minmax(0, 1fr);
   min-height: 100vh;
-  min-height: 100dvh;
+  min-height: 100svh;
 }
 
 .shell > .main {
@@ -810,7 +815,7 @@ html[data-theme="dark"] .bg-vignette {
   position: sticky;
   top: 0;
   height: 100vh;
-  height: 100dvh;
+  height: 100svh;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -4029,7 +4034,7 @@ html.modal-open .bg-aurora * {
   align-items: center;
   justify-content: center;
   min-height: 100vh;
-  min-height: 100dvh;
+  min-height: 100svh;
   padding: 28px 16px;
   padding: calc(28px + env(safe-area-inset-top, 0px)) 16px calc(28px + env(safe-area-inset-bottom, 0px));
 }
@@ -4931,6 +4936,16 @@ html[data-theme="dark"] .theme-icon--moon {
   }
 }
 
+/* 排障开关：URL 带 ?fx=off（app.js 会给 <html> 加 .fx-off）。
+   全部装饰动画与过渡一次关掉，用于一次性判定「闪」是否来自页面动画；
+   不带参数访问时这条规则完全不生效，正常观感不受影响。 */
+html.fx-off *,
+html.fx-off *::before,
+html.fx-off *::after {
+  animation: none !important;
+  transition: none !important;
+}
+
 /* ---------- 真触屏 / 窄屏：只清掉粘住的 hover ---------- */
 /* 触屏没有真正的 hover：点一下之后 :hover 会一直粘在最后点过的元素上，
    基础规则给未选中按钮的文字 / 描边反馈就会留着，看起来像「半个选中态」。
@@ -4985,12 +5000,53 @@ html[data-theme="dark"] .theme-icon--moon {
     transform: none;
   }
 
-  /* 触屏上这四类卡片不做 box-shadow 过渡（.modal-card / .panel 本来就没写过渡）。
-     box-shadow 动画的每一帧都要把整张卡（连同里面的文字）重新绘制、重新光栅化，
-     0.3s 过渡 ≈ 18 帧全卡重绘 —— 与 ring-spin 同一条链路，是点按后文字「闪一下」
-     的另一半来源。改成一步到位：亮起 / 熄灭各只重绘一帧。
-     顺带把粘滞 hover 的复位也变成瞬时，不会再有半秒的辉光拖尾。 */
+  /* ②a 视口稳定化：切断「地址栏活动 → 整页重排 + 全屏背景逐帧重采样」这条链。
+     前五轮全部只改卡片 / 按钮，从未动过背景层与视口单位，而这两层是深色
+     主题独有的「常驻逐帧层」：
+       ① .bg-aurora 里三团 filter: blur(90px) 的光球各带 28~34s 的 drift
+          动画 + will-change: transform。项目 3753 行的既有注释早就记录过
+          「背景逐帧重绘会逼遮罩重新采样，手机上表现为背景闪烁」。视口变化
+          时这个大模糊层要重新采样整屏，卡片本身是半透明玻璃、文字叠在上面，
+          每帧混合结果都不同 —— 浅色主题光球 opacity 只有 .2 看不出来，
+          深色是 .62/.5/.36 才会显性化。触屏上让光球静止（静态渐变光晕
+          仍在，只是不再缓慢漂移），并把整层提为独立合成层，纹理缓存不再
+          被视口变化作废。
+       ② 全站高度单位已从 100dvh 换成静态 100svh（见 body 规则注释）：
+          地址栏收放不再改变文档高度、不再触发整页重排。
+       ③ 恢复「确认不闪」版本里被回退时删掉的关键规则：辉光亮 / 灭不做
+          0.3s 的 box-shadow 过渡。git 比对 5cd42ed（用户实测不闪）与当前
+          版本，app.js 除 toast 外完全一致、按钮基础规则也完全一致，
+          唯一差异就是这条 transition:none 与旋转状态；旋转按用户要求
+          原样保留，这条恢复。
+     —— 边框流光旋转、滑块 FLIP、按钮反馈一律保持原样。 */
+  .bg-aurora { transform: translateZ(0); }
+  .orb { animation: none; will-change: auto; }
   .section, .card, .proj-card, .proj-add { transition: none; }
+
+  /* ②b 切筛选胶囊时，按钮文字不再逐帧重新光栅化。
+     前四轮修复全落在卡片装饰动画（旋转 / 辉光 / 提层 / 彗星）上，
+     而「承载按钮文字的元素本身」一直有三条每帧变化路径没动过：
+       ① transition: color .14s（.on 另带 .16s 延迟）——白字渐入 / 渐出
+          约 9 帧字形逐帧重上色，基础规则 3247 行注释自己就写着「闪一下」；
+       ② :active scale(.955) + transform .18s 过渡——按下回弹的 180ms 内
+          文字按非整数倍缩放，每帧重新光栅化；
+       ③ .seg-btn.on 的 text-shadow——选中态字形渲染路径切换。
+     深色浅字 + 地址栏活动时的亚像素取整差异把这些帧间差放大成「闪一下」，
+     桌面（视口稳定 / 性能余量）与地址栏收起时则看不出来。
+     触屏改成一步到位：颜色 / 描边瞬时（白字仍延后 .16s，保持「滑块滑过
+     大半才变白」的观感，避免压在浅灰轨道上看不清）、按压缩放取消、
+     文字光晕去掉。滑块 FLIP 与边框流光旋转保持原样 —— 动画观感不变。 */
+  .seg-btn {
+    transition: color 0s, border-color 0s, transform 0s;
+  }
+  .seg-btn.on,
+  html[data-theme="dark"] .seg-btn.on {
+    transition: color 0s linear 0.16s, border-color 0s, transform 0s;
+    text-shadow: none;
+  }
+  .seg-btn:active:not(:disabled) {
+    transform: none;
+  }
 
   /* ③ 只有 .fx-active 点亮：取值与桌面 :hover 完全相同的流光边 / 外辉光 / 旋转 */
   .section.fx-active:not(.readonly), .card.fx-active, .proj-card.fx-active,
@@ -5013,14 +5069,9 @@ html[data-theme="dark"] .theme-icon--moon {
   .modal-card.fx-active {
     box-shadow: 0 52px 104px -34px rgba(6, 9, 20, 0.78), 0 0 44px -6px var(--halo);
   }
-  /* 触屏上不再点亮 ring-spin 的旋转（.fx-active 只保留彩色边 + 外辉光，静态不转）。
-     ring-spin 动的是注册过的自定义属性 --ga，conic 渐变写在卡片自己的 background 里：
-     一旦转起来，整张卡片（连同里面的文字）每帧都要重新绘制、重新光栅化。
-     手机上点一下筛选胶囊 → pointerup 给所在 .section 打 .fx-active → 旋转起步的
-     那几帧正好撞上滑块动画，文字就「闪一下」（深色底浅色字下最明显）。
-     保留彩色边框与辉光（视觉上「点哪张卡哪张卡亮」不变），只去掉逐帧重绘的部分。
-     基础规则里各卡片的 animation-play-state 默认就是 paused /
-     running, paused，这里不再覆盖即可。 */
+  .section.fx-active:not(.readonly), .card.fx-active, .proj-card.fx-active,
+  .proj-add.fx-active { animation-play-state: running; }
+  .panel.fx-active, .modal-card.fx-active { animation-play-state: running, running; }
 }
 
 /* ==========================================================================
@@ -5075,7 +5126,7 @@ html.side-rail { --side-ease: var(--side-ease-in); }
     flex: 0 0 auto;
     width: var(--side-w);
     height: 100vh;
-    height: 100dvh;
+    height: 100svh;
     gap: 0;
     padding: 0;
     transition: width var(--side-dur) var(--side-ease);
