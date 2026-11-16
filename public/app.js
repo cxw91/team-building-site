@@ -1,4 +1,11 @@
 // 团建管理 —— 前端逻辑（多项目版）
+
+// 排障开关：URL 带 ?fx=off 时一键停掉全站装饰动画 / 过渡，用于判定「闪」
+// 是否由页面动画引起（带参数仍闪 = 与页面动画无关）。正常访问完全不生效。
+if (new URLSearchParams(location.search).get("fx") === "off") {
+  document.documentElement.classList.add("fx-off");
+}
+
 const $ = (s, r = document) => r.querySelector(s);
 const esc = (s) =>
   String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
@@ -229,7 +236,7 @@ function paintAccentSelection() {
   $("#accentName").textContent = hit ? hit.name : "默认";
 }
 function applyAccent(id) {
-  const next = ACCENTS.some((a) => a.id === id) ? id : "violet";
+  const next = ACCENTS.some((a) => a.id === id) ? id : "amber";
   document.documentElement.setAttribute("data-accent", next);
   try { localStorage.setItem(ACCENT_KEY, next); } catch (e) {}
   paintAccentSelection();
@@ -265,16 +272,45 @@ $("#accentGrid").addEventListener("keydown", (e) => {
   applyAccent(next.dataset.accent);
 });
 
-/* ---------- 强调色（accent）选择器：与上方「主题色」并列，6 张卡、青碧默认 ---------- */
+/* ---------- 强调色（accent）选择器：与上方「主题色」并列，6 张卡、青碧默认 ----------
+   色相刻意与主题色板错开（暖橙 32° / 松绿 158° / 青碧 188° / 海洋蓝 218° / 星云紫 246° / 玫瑰 337°）：
+   青柠 84° 与品红 292° 是主题色板没有的空档色相；雾蓝 215° 靠低饱和度（S≈0.2）与冷色主题区分。
+   保留青碧 / 暖橙 / 海洋蓝，是为了让暖橙、玫瑰两个主题仍有高对比的干净搭配；
+   其中海洋蓝与主题色板同色相，属于有意保留（见下方色板说明）。
+   已移除靛紫（撞星云紫）、松绿（撞松绿主题与 --ok）、红粉（与 --danger 同值）。 */
 const ACCENT_COLORS = [
-  { id: "teal",   name: "青碧",   light: "#0891B2", dark: "#22D3EE" },
-  { id: "orange", name: "暖橙",   light: "#EA580C", dark: "#FB923C" },
-  { id: "blue",   name: "海洋蓝", light: "#2563EB", dark: "#60A5FA" },
-  { id: "indigo", name: "靛紫",   light: "#4F46E5", dark: "#818CF8" },
-  { id: "green",  name: "松绿",   light: "#16A34A", dark: "#4ADE80" },
-  { id: "red",    name: "红粉",   light: "#DC2626", dark: "#F87171" },
+  { id: "teal",    name: "青碧",   light: "#0891B2", dark: "#22D3EE" },
+  { id: "orange",  name: "暖橙",   light: "#EA580C", dark: "#FB923C" },
+  { id: "blue",    name: "海洋蓝", light: "#2563EB", dark: "#60A5FA" },
+  { id: "lime",    name: "青柠",   light: "#65A30D", dark: "#A3E635" },
+  { id: "fuchsia", name: "品红",   light: "#C026D3", dark: "#E879F9" },
+  { id: "slate",   name: "雾蓝",   light: "#475569", dark: "#94A3B8" },
 ];
 const ACCENT_COLOR_KEY = "tb_accent_color";
+
+/* ---------- 偏好启动自愈：刷新后不丢配置 ----------
+   <head> 引导脚本为防首帧闪烁自己存了一份 id 白名单；它一旦落后于上面的色卡数组，
+   就会把用户存过的合法 id 判成非法、静默退回默认色（反之也会放过已下线的旧 id）。
+   这里以 localStorage 为准、以色卡数组为唯一合法性来源做一次收敛：
+     · 合法 id 但 html 属性被引导改写 → 纠正回用户选过的那张卡
+     · 已下线的旧 id / 脏值          → 收敛到默认并回写，避免每次刷新重复判断
+     · 从没选过（null）              → 保持引导给的默认，不写盘
+   以后增删色卡只需改 app.js 一处，不会再出现「刷新后配色变默认」。 */
+function reconcilePreference(key, attr, ids, fallback) {
+  let saved = null;
+  try { saved = localStorage.getItem(key); } catch (e) {}
+  const next = ids.includes(saved) ? saved : fallback;
+  const root = document.documentElement;
+  if (root.getAttribute(attr) !== next) root.setAttribute(attr, next);
+  if (saved !== null && saved !== next) {
+    try { localStorage.setItem(key, next); } catch (e) {}
+  }
+}
+reconcilePreference(ACCENT_KEY, "data-accent", ACCENTS.map((a) => a.id), "amber");
+reconcilePreference(ACCENT_COLOR_KEY, "data-accentcolor", ACCENT_COLORS.map((a) => a.id), "teal");
+// 主题色色卡在上面已渲染过；属性若被纠正，把选中态重新对一次
+paintAccentSelection();
+
 function currentAccentColor() {
   const id = document.documentElement.getAttribute("data-accentcolor");
   return ACCENT_COLORS.some((a) => a.id === id) ? id : "teal";
@@ -470,6 +506,14 @@ function toast(msg) {
   const el = $("#toast");
   el.textContent = msg;
   el.classList.remove("hidden");
+  // 单行显示：长消息先逐级压缩字号（下限 10.5px），绝大多数消息都能完整放下；
+  // 仍放不下才由 CSS 的 ellipsis 截断，绝不折行。
+  el.style.fontSize = "";
+  let size = 13;
+  while (size > 10.5 && el.scrollWidth > el.clientWidth) {
+    size -= 0.5;
+    el.style.fontSize = size + "px";
+  }
   clearTimeout(el._t);
   el._t = setTimeout(() => el.classList.add("hidden"), 2200);
 }
@@ -1425,9 +1469,14 @@ function syncNavGlider(animate = true) {
   }
 }
 
-// 窗口跨过断点时侧栏会在「左侧纵列」与「底部横条」之间切换，位移轴跟着变，需要重新落位
+// 窗口跨过断点时侧栏会在「左侧纵列」与「底部横条」之间切换，位移轴跟着变，需要重新落位。
+// 同样只认宽度变化：手机上地址栏收起 / 展开只改高度，页签条几何没变，
+// 没必要为它重算一遍滑块位置（syncNavGlider 内部还有一次强制布局）。
 let navGliderRaf = 0;
+let navViewportW = window.innerWidth;
 window.addEventListener("resize", () => {
+  if (window.innerWidth === navViewportW) return;
+  navViewportW = window.innerWidth;
   if (navGliderRaf) return;
   navGliderRaf = requestAnimationFrame(() => {
     navGliderRaf = 0;
@@ -1882,6 +1931,7 @@ function paintTab(tab) {
   }
   try {
     paint();
+    placeSegGliders(c); // 整页重建：.no-tr 期间无动画落位，滑块不会从 0 宽长出来
     applyReadonly();
     restoreSuggestOpen(keepSuggest);
     reapplyInflight(); // 重画后把在途请求的加载态刷回到新元素上
@@ -2242,6 +2292,7 @@ function paintCurrentTab() {
   try {
     const keepSuggest = captureSuggestOpen(); // 同上：局部重画也别把正开着的候选框关掉
     paint();
+    placeSegGliders(document); // 局部重画整页：新节点无动画落位
     applyReadonly();
     restoreSuggestOpen(keepSuggest);
     reapplyInflight(); // 同上
@@ -2410,6 +2461,65 @@ async function fetchShopping(signal) {
   return loadPageData("shopping", signal);
 }
 
+// ---------- 分段控件滑块 ----------
+// 整组（.shop-seg / .split-switch-seg）共用一个渐变块。宽度变化用 FLIP 编码进
+// transform 的 scaleX，动画期间只有 transform 在变，全程走合成层：
+//   起点 = 旧位置 + scaleX(旧宽 / 新宽) → 视觉宽度仍是旧宽，衔接无跳变
+//   终点 = 新位置 + scaleX(1)           → 标准胶囊，与直接改 width 逐像素一致
+// 位置读 offsetLeft/Top、尺寸读 offsetWidth/Height：这些是布局值，不受按钮
+// :active 的 scale(0.955) 影响（getBoundingClientRect 会读到缩放后的框，触屏上
+// :active 残留会让滑块落点偏 1px，且松开后不会自动回来）。
+// 首次定位 / 整页重建 / resize 必须关掉过渡，否则滑块会从 0 宽「长」出来。
+function placeSegGliders(root = document, animate = true) {
+  const scope = root && root.querySelectorAll ? root : document;
+  scope.querySelectorAll(".shop-seg, .split-switch-seg").forEach((group) => {
+    const on = group.querySelector(".seg-btn.on");
+    if (!on) return;
+    let x, y;
+    if (on.offsetParent === group) {
+      // offsetLeft/Top 相对 offsetParent 的 padding edge，已扣掉轨道 1px 边框
+      x = on.offsetLeft;
+      y = on.offsetTop;
+    } else {
+      const gr = group.getBoundingClientRect();
+      const br = on.getBoundingClientRect();
+      x = br.left - gr.left - group.clientLeft;
+      y = br.top - gr.top - group.clientTop;
+    }
+    const w = on.offsetWidth;
+    const h = on.offsetHeight;
+    const prev = group._segPos;
+    // 几何完全没变就直接返回：不再写 CSS 变量、不再强制同步布局。
+    // 手机上一收一放地址栏就会触发 resize，而地址栏只改视口高度、不改滑块几何；
+    // 以前这里每次 resize 都要 add/remove 一遍 .seg-instant 再 void offsetWidth，
+    // 等于把整篇文档重新布局一次，若正好落在点按后滑块动画的头几帧上，
+    // 动画会被截断、文本重新光栅化 —— 观感就是「筛选卡片的文字闪一下」。
+    if (prev && Math.abs(prev.x - x) < 0.5 && Math.abs(prev.y - y) < 0.5 &&
+        Math.abs(prev.w - w) < 0.5 && Math.abs(prev.h - h) < 0.5) {
+      return;
+    }
+    const flip = animate && !!prev && prev.w > 0 && w > 0 &&
+      (Math.abs(prev.x - x) > 0.5 || Math.abs(prev.y - y) > 0.5 || Math.abs(prev.w - w) > 0.5);
+
+    // 先无过渡地提交「起点」（或最终落位），强制一次样式计算后再放开 transition，
+    // 否则浏览器会把起点与终点合并成一次跳变，FLIP 就不生效了。
+    group.classList.add("seg-instant");
+    group.style.setProperty("--seg-gw", w + "px");
+    group.style.setProperty("--seg-gh", h + "px");
+    group.style.setProperty("--seg-gx", (flip ? prev.x : x) + "px");
+    group.style.setProperty("--seg-gy", (flip ? prev.y : y) + "px");
+    group.style.setProperty("--seg-sx", flip ? (prev.w / w).toFixed(4) : "1");
+    void group.offsetWidth;
+    group.classList.remove("seg-instant");
+    if (flip) {
+      group.style.setProperty("--seg-gx", x + "px");
+      group.style.setProperty("--seg-gy", y + "px");
+      group.style.setProperty("--seg-sx", "1");
+    }
+    group._segPos = { x, y, w, h };
+  });
+}
+
 // ---------- 采购清单筛选 ----------
 // 条件只存在内存里：切页签保持，切项目 / 退出登录（resetTabCache）与刷新页面复位，
 // 免得带着上一个项目的条件进入新项目却看到空列表。
@@ -2508,6 +2618,85 @@ function shopFamilyOptionsHtml() {
 function shopFamilySignature() {
   return shopFilterFamilies().map((r) => String(r.id) + ":" + r.name).join("|");
 }
+// ---------- 自绘下拉：按可用空间决定展开方向与高度 ----------
+// 窄屏下顶部工具条与底部页签条都是 fixed（z-index 70），而菜单所在 .section
+// 只在卡片内部提到 z-index 30；菜单向下展开到页签条位置时，最后几个家庭会被整条盖住。
+// 这里在打开 / 页面滚动时量一次触发器位置：下方够就向下、不够且上方更宽就向上，
+// 并把 max-height 收敛到实际可用高度，让面板始终落在「顶栏下沿 ~ 页签条上沿」之间，
+// 不靠提升层级硬压固定栏。采购清单与采购明细两组下拉共用。
+const DROP_GAP = 6;    // 与 .shop-select-menu 的 top / bottom 偏移一致
+const DROP_MAX = 260;  // 与 CSS 的 max-height 一致
+const DROP_MIN = 140;  // 下方不足这个高度（约 3 项）就考虑翻到上方
+
+// 固定栏只在窄屏才是 fixed；取其靠内的一条边作为可用区边界，桌面端返回 null。
+function dropFixedEdge(sel, edge) {
+  const el = $(sel);
+  if (!el || getComputedStyle(el).position !== "fixed") return null;
+  const r = el.getBoundingClientRect();
+  return edge === "top" ? r.bottom : r.top;
+}
+function placeDropdown(trigger, menu) {
+  if (!trigger || !menu) return;
+  // 先解除限高与「无需滚动」标记，量到的才是内容自然高度。
+  // 用 none（而不是清空内联样式）是为了同时盖掉 CSS 里的 max-height:260px，
+  // 否则选项多时 offsetHeight 会被截成 260，测不出真实内容高度。
+  menu.style.maxHeight = "none";
+  delete menu.dataset.noscroll;
+  const vh = document.documentElement.clientHeight;
+  const r = trigger.getBoundingClientRect();
+  let headBottom = dropFixedEdge(".side-top", "top");
+  if (headBottom == null) headBottom = dropFixedEdge(".topbar", "top");
+  const navTop = dropFixedEdge(".side-nav", "bottom");
+  const topLimit = (headBottom == null ? 0 : headBottom) + 8;
+  const bottomLimit = (navTop == null || navTop <= 0 || navTop >= vh ? vh : navTop) - 8;
+  const below = bottomLimit - r.bottom - DROP_GAP;
+  const above = r.top - DROP_GAP - topLimit;
+  // offsetHeight 含 1px 上下边框；以前用 scrollHeight（不含边框）当自然高度，
+  // 再原样写回 border-box 的 max-height，菜单就永远差 2px 放不下，
+  // overflow-y:auto 于是画出一条几乎满高的 thumb —— 只有一两个家庭也显示滚动条。
+  const natural = menu.offsetHeight || DROP_MAX;
+  // 优先选能完整放下内容的方向；两侧都放不下时才退回「下方不足阈值就上翻」。
+  let dir = "down", avail = below;
+  if (below >= natural) { dir = "down"; avail = below; }
+  else if (above >= natural) { dir = "up"; avail = above; }
+  else if (below < DROP_MIN && above > below) { dir = "up"; avail = above; }
+  // 放得下就完全不限高：菜单按内容自适应，overflow-y:auto 自然不会画滚动条；
+  // 只有空间真的不够时才限高，此时的滚动条才是必要的。
+  const room = Math.min(DROP_MAX, Math.max(72, Math.floor(avail)));
+  menu.style.maxHeight = natural <= room ? "" : room + "px";
+  menu.dataset.drop = dir;
+  // 兜底：亚像素 / padding 造成的 1~2px 溢出也会让 Chromium 画出 thumb
+  if (menu.scrollHeight <= menu.clientHeight + 1) menu.dataset.noscroll = "";
+}
+function clearDropdownPlacement(menu) {
+  if (!menu) return;
+  menu.style.maxHeight = "";
+  delete menu.dataset.drop;
+  delete menu.dataset.noscroll;
+}
+// 页面滚动 / 窗口缩放后触发器位置会变，打开中的面板要重新量一次。
+// 不捕获 scroll：菜单内部自己滚动时不重算，避免限高变化引起跳动。
+function refreshOpenDropdowns() {
+  [
+    ["#shop-filter-family", "#shop-family-menu"],
+    ["#pur-filter-family", "#pur-family-menu"],
+  ].forEach(([t, m]) => {
+    const menu = $(m);
+    if (menu && !menu.hidden) placeDropdown($(t), menu);
+  });
+}
+window.addEventListener("scroll", refreshOpenDropdowns, { passive: true });
+// 移动端「地址栏收起 / 展开」也会触发 resize，但只改视口高度，不影响分段控件的几何。
+// 这里只在宽度真的变了（跨断点、旋转屏幕、换行重排）时才重新落位，
+// 免得每次地址栏滑动都白跑一遍强制同步布局。
+let segViewportW = window.innerWidth;
+window.addEventListener("resize", () => {
+  refreshOpenDropdowns();
+  if (window.innerWidth === segViewportW) return;
+  segViewportW = window.innerWidth;
+  placeSegGliders(document, false); // 宽度 / 换行变化后重新落位，不播滑动
+});
+
 // 面板开合统一走这里：paint / 后台刷新重建 DOM 后按 state 恢复开合，
 // 不播入场动画、不抢焦点，避免切回本页时「闪一下」。
 function paintShopFamilyOpen(focus = false, animate = false) {
@@ -2515,6 +2704,8 @@ function paintShopFamilyOpen(focus = false, animate = false) {
   if (!menu || !trigger) return;
   const want = !!state.shopFamilyOpen && !trigger.disabled;
   menu.hidden = !want;
+  if (want) placeDropdown(trigger, menu);
+  else clearDropdownPlacement(menu);
   trigger.setAttribute("aria-expanded", want ? "true" : "false");
   const sec = trigger.closest(".section");
   if (sec) sec.classList.toggle("has-open-menu", want);
@@ -2638,6 +2829,10 @@ function renderShopRows(force = false) {
     if (q && u) draft = { qty: q.value, unit: u.value };
     if (!shown.some((i) => Number(i.id) === Number(editId))) state.editingShop = null;
   }
+  // 先同步筛选控件、让滑块在「干净布局」上起帧：placeSegGliders 要读 offsetLeft，
+  // 若排在 list.innerHTML 之后，浏览器必须先完成整张新列表的布局才能量位置，
+  // 这次强制同步布局正好压在动画第一帧上，是切换时顿感的另一个来源。
+  syncShopFilterControls(force);
   list.innerHTML = shown.length
     ? shown.map(shopRowHtml).join("")
     : `<div class="empty shop-empty">${all.length ? "没有符合条件的采购项" : "清单为空"}</div>`;
@@ -2645,15 +2840,15 @@ function renderShopRows(force = false) {
     const q = $("#shop-edit-qty-" + editId), u = $("#shop-edit-unit-" + editId);
     if (q && u) { q.value = draft.qty; u.value = draft.unit; }
   }
-  const waiting = shown.filter((i) => i.status === "待购").length;
-  const claimed = shown.filter((i) => i.claimed_family_id).length;
+  // 右上角统计是整张清单的概览，固定按全量口径，不随筛选条件变化：
+  // 筛选只影响下方列表行，切换「状态 / 接单 / 家庭」时这块文字保持稳定，
+  // 也不会因为字数变化让标题栏抖一下。数据本身增删时数字照常更新。
+  const waiting = all.filter((i) => i.status === "待购").length;
+  const claimed = all.filter((i) => i.claimed_family_id).length;
   const count = $("#shop-count");
   if (count) {
-    count.textContent = shopFilterActive()
-      ? `显示 ${shown.length} / 共 ${all.length} 项 · ${waiting} 项待购 · ${claimed} 项已被接单`
-      : `共 ${all.length} 项 · ${waiting} 项待购 · ${claimed} 项已被接单`;
+    count.textContent = `共 ${all.length} 项 · ${waiting} 项待购 · ${claimed} 项已被接单`;
   }
-  syncShopFilterControls(force);
   disableEditControlsIn(list); // 局部重绘出的新控件也要遵守只读
 }
 
@@ -2709,6 +2904,8 @@ function syncShopFilterControls(force = false) {
   if (q && q.value !== String(f.q || "") && (force || document.activeElement !== q)) q.value = f.q || "";
   const clear = bar.querySelector("[data-action='shop-filter-clear']");
   if (clear) clear.hidden = !shopFilterActive();
+  // 选中态切完再把滑块滑到新位置（首次定位会自动关掉过渡）
+  placeSegGliders(bar);
 }
 
 // ---------- 物品名称候选框（自绘下拉 · 只能选、不能新增） ----------
@@ -2976,9 +3173,10 @@ function purchaseRowHtml(p) {
   </div>`;
 }
 
-// 「更多操作」菜单的开关：只切 hidden / aria / 位置，不重画整页 ——
+// 「更多操作」菜单的开关：只切 hidden / aria，不重画整页 ——
 // 整页重画会重建整张列表，正是之前修过的「列表闪一下」。
 // state.purMenuId 记当前展开那一行的 id，天然保证同时只开一个。
+// 气泡与「自家登记」标签垂直居中（CSS 负责），不再需要上下翻转。
 function syncPurMenus() {
   document.querySelectorAll("#pur-rows .row-more").forEach((wrap) => {
     const open = state.purMenuId !== null && Number(state.purMenuId) === Number(wrap.dataset.id);
@@ -3001,15 +3199,59 @@ function closePurMenu() {
 function openPurMenu(btn) {
   state.purMenuId = Number(btn.dataset.id);
   syncPurMenus();
-  const menu = btn.parentElement && btn.parentElement.querySelector(".row-menu");
-  if (!menu) return;
-  // 默认向下弹；下方放不下（最后几行尤其常见）且上方更宽裕时改成向上弹。
-  // 菜单刚从 hidden 变可见，同一帧内量 offsetHeight 已有值，不会闪。
-  menu.classList.remove("up");
-  const b = btn.getBoundingClientRect();
-  const need = menu.offsetHeight + 12;
-  if (b.bottom + need > window.innerHeight - 8 && b.top - need > 8) menu.classList.add("up");
+  placePurMenu(btn);
 }
+
+// 手机端底部有固定页签条（.side-nav，z-index:70），气泡可用区的下沿是它的顶部，
+// 不是视口底——否则贴底的行展开气泡会压在底栏上 / 被底栏挡住。
+function purMenuBottomLimit() {
+  const vh = window.innerHeight;
+  const vw = window.innerWidth;
+  const navs = document.querySelectorAll(".side-nav");
+  for (const nav of navs) {
+    if (nav.closest(".hidden")) continue;
+    if (getComputedStyle(nav).position !== "fixed") continue;
+    const r = nav.getBoundingClientRect();
+    if (r.width >= vw - 2 && vh - r.bottom < 2) return r.top - 8; // 横向贴底的页签条
+  }
+  return vh - 8;
+}
+
+// 气泡默认与标签垂直居中；当居中会让气泡超出可用区时，把它夹回可用区内（上下留 8px），
+// 并让尖角移动、始终对准标签中心。位移写进 --menu-shift / --caret-y，由 CSS 消费。
+function placePurMenu(btn) {
+  const wrap = btn && btn.closest(".row-more");
+  const menu = wrap && wrap.querySelector(".row-menu");
+  if (!menu || menu.hidden) return;
+  const mh = menu.offsetHeight;      // hidden 刚移除，同一帧内已有值
+  if (!mh) return;
+  const wr = wrap.getBoundingClientRect();
+  const br = btn.getBoundingClientRect();
+  const cssTop = wr.top + wr.height / 2 - mh / 2;           // translate 为 0 时的视口 top
+  const clampedTop = Math.max(8, Math.min(cssTop, purMenuBottomLimit() - mh));
+  const shift = clampedTop - cssTop;
+  let caretY = br.top + br.height / 2 - clampedTop;          // 标签中心相对气泡顶缘
+  if (caretY < 12) caretY = 12;                              // 夹在圆角内，尖角不跑出气泡
+  if (caretY > mh - 12) caretY = mh - 12;
+  menu.style.setProperty("--menu-shift", Math.round(shift) + "px");
+  menu.style.setProperty("--caret-y", Math.round(caretY) + "px");
+}
+
+// 打开期间视口变化（页面滚动 / 窗口缩放）时重算，避免夹取后位置失效。
+let purMenuPlaceRaf = 0;
+function placeOpenPurMenu() {
+  if (state.purMenuId === null || purMenuPlaceRaf) return;
+  purMenuPlaceRaf = requestAnimationFrame(() => {
+    purMenuPlaceRaf = 0;
+    if (state.purMenuId === null) return;
+    const btn = document.querySelector(
+      `#pur-rows .row-more[data-id="${state.purMenuId}"] .more-btn`
+    );
+    if (btn) placePurMenu(btn);
+  });
+}
+window.addEventListener("scroll", placeOpenPurMenu, true);
+window.addEventListener("resize", placeOpenPurMenu);
 
 // 点菜单外的任何地方都收起；Esc 同样收起（键盘用户唯一的出路）
 document.addEventListener("pointerdown", (e) => {
@@ -3078,6 +3320,8 @@ function paintPurFamilyOpen(focus = false, animate = false) {
   if (!menu || !trigger) return;
   const want = !!state.purFamilyOpen && !trigger.disabled;
   menu.hidden = !want;
+  if (want) placeDropdown(trigger, menu);
+  else clearDropdownPlacement(menu);
   trigger.setAttribute("aria-expanded", want ? "true" : "false");
   const sec = trigger.closest(".section");
   if (sec) sec.classList.toggle("has-open-menu", want);
@@ -3631,6 +3875,17 @@ $("#content").addEventListener("click", async (e) => {
         });
       });
       if (!ok) return; // 取消：口径不变，也不必重渲染
+      // 结算页末尾会整页 render()，DOM 重建后滑块没有「上一个位置」可滑。
+      // 这里先把选中态挪到新按钮手动滑一次，重建时再由 paintTab 无动画落位到同一位置。
+      const seg = btn.closest(".split-switch-seg");
+      if (seg) {
+        seg.querySelectorAll(".seg-btn").forEach((b) => {
+          const on = b === btn;
+          b.classList.toggle("on", on);
+          b.setAttribute("aria-pressed", on ? "true" : "false");
+        });
+        placeSegGliders(seg.parentElement || document);
+      }
       state.tabAt.settlement = 0; // 概览与结算都吃 /settlement，切过去时立即重取
       state.tabAt.overview = 0;
       toast("分摊方式已改为「" + label + "」");
@@ -4720,7 +4975,9 @@ function watchAutofill() {
  *   - 触发：鼠标悬停(pointerover/out) 带 ~400ms 意图延迟 + 160ms 离开宽限（手感对齐原生
  *     title，避免「一碰就弹/抖动」）；键盘聚焦(focusin/out) 即时反馈，无障碍友好；
  *     触摸端不主动弹（移动端多靠点击，且气泡会遮挡内容）。
- *   - 定位：默认在锚点上方，顶部空间不足且下方够放时翻到下方；水平夹在视口内。
+ *   - 定位：侧栏导航（.side-nav 内的页签/导航项）气泡落在图标右侧、纵向居中，
+ *     右侧不够放则翻到左侧；其余元素仍默认在锚点上方，顶部空间不足且下方够放时翻到下方。
+ *     两种方向都夹在视口内。
  *   - 显隐闸门：仅当锚点「有文字、但当前被隐藏」才弹——即侧栏收起态 .tab-label
  *     （max-width:0+opacity:0 只剩图标）需气泡补名字；纯图标按钮（主题 / 菜单 / 刷新 /
  *     侧栏开关，无文字节点）与文字已可见的元素（宽边页签、带可见标签的按钮）都不弹。
@@ -4806,9 +5063,32 @@ function watchAutofill() {
     var tw = tip.offsetWidth, th = tip.offsetHeight;
     if (!tw || !th) return;                    // 首帧尺寸未就绪，等下一帧重排后再算
     var vw = window.innerWidth, vh = window.innerHeight;
-    var cx = r.left + r.width / 2;          // 锚点中心 x
     var gap = 8;
-    // 上方放不下、且下方放得下 → 翻到下方
+
+    // 侧栏收起态的导航项：气泡从上方挪到图标右边，纵向与图标居中对齐。
+    // 右侧不够放则翻到左边（箭头反向）；仍放不下就夹在视口内。
+    if (el.closest && el.closest(".side-nav")) {
+      var onLeft = false;
+      var right = r.right + gap;
+      if (right + tw > vw - 8 && r.left - tw - gap >= 8) {
+        right = r.left - tw - gap;
+        onLeft = true;
+      }
+      var cyAnchor = r.top + r.height / 2;
+      var navTop = Math.max(8, Math.min(cyAnchor - th / 2, vh - 8 - th));
+      tip.style.left = Math.round(Math.min(right, Math.max(8, vw - 8 - tw))) + "px";
+      tip.style.top = Math.round(navTop) + "px";
+      tip.classList.toggle("ui-tip--right", !onLeft);
+      tip.classList.toggle("ui-tip--left", onLeft);
+      tip.classList.remove("ui-tip--below");
+      // 尾巴 y（相对气泡顶缘），夹在 [12, th-12]
+      var caretY = Math.max(12, Math.min(cyAnchor - navTop, th - 12));
+      tip.style.setProperty("--cy", caretY + "px");
+      return;
+    }
+
+    // 其余元素：默认在锚点上方，顶部放不下、且下方放得下 → 翻到下方。
+    var cx = r.left + r.width / 2;          // 锚点中心 x
     var below = (r.top - th - gap < 0) && (r.bottom + th + gap <= vh);
     var top = below ? r.bottom + gap : r.top - th - gap;
     var left = cx - tw / 2;
@@ -4817,6 +5097,7 @@ function watchAutofill() {
     tip.style.left = left + "px";
     tip.style.top = Math.round(top) + "px";
     tip.classList.toggle("ui-tip--below", below);
+    tip.classList.remove("ui-tip--right", "ui-tip--left");
     // 尾巴 x（相对气泡左缘），夹在 [12, tw-12]
     var caret = cx - left;
     if (caret < 12) caret = 12;
@@ -4961,5 +5242,76 @@ function watchAutofill() {
       childList: true, subtree: true,
       attributes: true, attributeFilter: ["title"],
     });
+  }
+})();
+
+/* =====================================================================
+ * 设置弹窗滚动指示条：原生滚动条透明但保留槽位与可拖动性（样式见 style.css），
+ * 这里叠一条浮层细条 —— 滚动时淡入、停手约 0.9s 后淡出。
+ * 节点动态挂到 #settingsModal，不改弹窗 HTML 结构；不主动显示（没滚就不该有条）。
+ * ===================================================================== */
+(function () {
+  var modal = document.getElementById("settingsModal");
+  var card = modal && modal.querySelector(".settings-card");
+  if (!modal || !card) return;
+
+  var bar = document.createElement("div");
+  bar.className = "settings-scroll-indicator";
+  bar.setAttribute("aria-hidden", "true");
+  var thumb = document.createElement("div");
+  thumb.className = "settings-scroll-indicator__thumb";
+  bar.appendChild(thumb);
+  modal.appendChild(bar);
+
+  var hideTimer = 0;
+  var HIDE_DELAY = 900;
+  var TRACK_PAD = 16;          // 与 .modal-card::-webkit-scrollbar-track 的 margin 对齐
+
+  function place() {
+    var r = card.getBoundingClientRect();
+    var trackH = r.height - TRACK_PAD * 2;
+    if (trackH <= 0) return;
+    var ratio = card.clientHeight / card.scrollHeight;
+    if (ratio >= 1) {           // 内容没溢出：收起指示条
+      thumb.style.height = "0px";
+      return;
+    }
+    var h = Math.max(28, Math.round(trackH * ratio));
+    var maxScroll = card.scrollHeight - card.clientHeight;
+    var y = maxScroll > 0 ? (card.scrollTop / maxScroll) * (trackH - h) : 0;
+    bar.style.left = Math.round(r.right - 8) + "px";
+    bar.style.top = Math.round(r.top + TRACK_PAD) + "px";
+    bar.style.height = Math.round(trackH) + "px";
+    thumb.style.height = h + "px";
+    thumb.style.top = Math.round(y) + "px";
+  }
+
+  function show() {
+    clearTimeout(hideTimer);
+    place();
+    bar.classList.add("is-active");
+    hideTimer = setTimeout(function () { bar.classList.remove("is-active"); }, HIDE_DELAY);
+  }
+
+  function hide() {
+    clearTimeout(hideTimer);
+    bar.classList.remove("is-active");
+  }
+
+  card.addEventListener("scroll", show, { passive: true });
+  window.addEventListener("resize", function () {
+    if (bar.classList.contains("is-active")) place();
+  });
+
+  // 关闭弹窗立即收起；打开不主动显示。只监听 class（hidden），避开 modal 上
+  // top/height 等由软键盘同步带来的高频 style 写入。
+  if (window.MutationObserver) {
+    new MutationObserver(function (muts) {
+      for (var i = 0; i < muts.length; i++) {
+        if (muts[i].attributeName !== "class") continue;
+        if (modal.classList.contains("hidden")) hide();
+        break;
+      }
+    }).observe(modal, { attributes: true, attributeFilter: ["class"] });
   }
 })();

@@ -19,13 +19,17 @@
       document.documentElement.setAttribute("data-theme", t);
     })();
     /* 设置项引导：同样要在样式表加载前落到 html 上，否则刷新时会先闪一下默认的
-       品牌紫 / 248px 宽边，再「啪」地跳成用户选过的强调色与窄边。
-         data-accent     强调色（默认 violet，即改版前的品牌紫）
+       品牌紫 / 248px 宽边，再「啪」地跳成用户选过的配色与窄边。
+         data-accent      主题色（默认 amber 暖橙；violet 为改版前的品牌紫）
+         data-accentcolor 强调色（默认 teal 青碧）
          side-auto       侧边栏动画已使能，由「设置」弹窗控制，默认关闭
          side-rail       当前窄边；动画使能时刷新恒从窄边起步，手动模式才读上次存的宽窄
          side-icon-right 底部按钮显示「竖线靠右」那枚图标（= 自动悬停态 / 手动窄边），
                          由底部脚本按当前模式算；提前预置避免刷新时图标闪一下 */
     (function () {
+      /* 下面两份 id 白名单只负责「防首帧闪烁」，最终合法性以 app.js 的 ACCENTS /
+         ACCENT_COLORS 为准。万一改色卡时漏改这里，app.js 启动时会按 localStorage
+         里的值自愈并回写，不会静默把用户选过的配色退回默认。改色卡时请同步两处。 */
       var allowed = ["violet", "ocean", "teal", "forest", "amber", "rose"];
       var ac = null, anim = null, oldAuto = null, rail = null;
       try {
@@ -37,7 +41,7 @@
       if (allowed.indexOf(ac) < 0) ac = "amber";
       document.documentElement.setAttribute("data-accent", ac);
       /* 强调色（--accent）引导：默认青碧，6 张卡由「设置」弹窗写入 tb_accent_color */
-      var acColor = null, allowedColor = ["teal", "blue", "indigo", "green", "orange", "red"];
+      var acColor = null, allowedColor = ["teal", "orange", "blue", "lime", "fuchsia", "slate"];
       try { acColor = localStorage.getItem("tb_accent_color"); } catch (e) {}
       if (allowedColor.indexOf(acColor) < 0) acColor = "teal";
       document.documentElement.setAttribute("data-accentcolor", acColor);
